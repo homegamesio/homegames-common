@@ -1,0 +1,22 @@
+{
+  "name": "homegames-common",
+  "version": "0.0.2",
+  "description": "Homegames common tools",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/homegamesio/homegames-common.git"
+  },
+  "author": "Joseph Garcia",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/homegamesio/homegames-common/issues"
+  },
+  "homepage": "https://github.com/homegamesio/homegames-common#readme",
+  "dependencies": {
+    "aws-sdk": "^2.809.0"
+  }
+}
