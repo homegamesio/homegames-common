@@ -3,22 +3,25 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const AWS = require('aws-sdk');
+const unzipper = require('unzipper');
+const { Readable } = require('stream');
 
-const getUrl = (url) => new Promise((resolve, reject) => {
+const getUrl = (url, headers = {}) => new Promise((resolve, reject) => {
     const getModule = url.startsWith('https') ? https : http;
 
     let responseData = '';
 
-    getModule.get(url, (res) => {
+    getModule.get(url, { headers } , (res) => {
+        const bufs = [];
         res.on('data', (chunk) => {
-            responseData += chunk;
+            bufs.push(chunk);
         });
 
         res.on('end', () => {
             if (res.statusCode > 199 && res.statusCode < 300) {
-                resolve(responseData);
+                resolve(Buffer.concat(bufs));
             } else {
-                reject(responseData);
+                reject(Buffer.concat(bufs));
             }
         });
     }).on('error', error => {
@@ -90,7 +93,7 @@ const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
                 certPath = path.join(dir, file);
             }
 
-            if (file === 'key.pem') {
+            if (file === 'privkey.pem') {
                 keyPath = path.join(dir, file);
             }
         });
@@ -168,9 +171,7 @@ const certInit = (certPath, loginPath) => new Promise((resolve, reject) => {
             console.log("LOGIN DATA");
             console.log(loginData);
             getUrl('https://certifier.homegames.link/get-certs').then(data => {
-                console.log("GOT AHT");
-                console.log(data);
-                resolve();
+                resolve(data);
             }).catch(err => {
                 console.error("Could not fetch cert");
                 console.error(err);
@@ -210,14 +211,89 @@ const login = (username, password) => new Promise((resolve, reject) => {
     }).then(data => {
         resolve(JSON.parse(data));
     });
-    
 });
 
+const verifyAccessToken = (username, accessToken) => new Promise((resolve, reject) => {
+    postUrl('https://auth.homegames.io', '/', {
+        type: 'verify',
+        username, 
+        accessToken
+    }).then(_data => {
+        const data = JSON.parse(_data);
+        if (data.success) {
+            resolve();
+        } else {
+            reject();
+        }
+    });
+});
 
+const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
+    fs.exists(authPath, (exists) => {
+        if (exists) {
+            fs.readFile(authPath, (err, _data) => {
+                let data;
+
+                try {
+                    data = JSON.parse(_data);
+                    if (!data.username || !data.tokens) {
+                        throw new Error();
+                    }
+                } catch (err) {
+                    reject({
+                        type: 'DATA_READ_ERROR'
+                    });
+                }
+
+                if (err) {
+                    reject({
+                        type: 'DATA_READ_ERROR'
+                    });
+                }
+
+                resolve(data);
+            });
+        } else {
+            reject({type: 'DATA_NOT_FOUND'});
+        }
+    });
+});
+
+const getCertData = (username, accessToken) => new Promise((resolve, reject) => {
+    getUrl('https://certifier.homegames.link/get-certs', {
+        'hg-username': username,
+        'hg-access-token': accessToken
+    }).then(data => {
+        resolve(data);
+    });
+});
+
+const bufToStream = (buf) => {
+    return new Readable({
+        read() {
+            this.push(buf);
+            this.push(null);
+        }
+    });
+};
+
+// unzip a cert bundle to the given path
+const storeCertData = (certBundle, path) => new Promise((resolve, reject) => {
+    const certStream = bufToStream(certBundle);
+
+    certStream.pipe(unzipper.Extract({ path }));
+
+    resolve();
+});
 
 module.exports = {
     certInit,
+    getCertData,
     signup,
     login,
-    confirmUser
+    confirmUser,
+    validateExistingCerts,
+    getLoginInfo,
+    verifyAccessToken,
+    storeCertData
 };
