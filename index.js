@@ -181,26 +181,6 @@ const certInit = (certPath, loginPath) => new Promise((resolve, reject) => {
     });
 });
 
-const invokeLambda = (functionName, region, _params) => new Promise((resolve, reject) => {
-    console.log("REGION");
-    console.log(region);
-    const lambda = new AWS.Lambda({ region });
-
-    const params = {
-        FunctionName: functionName,
-        Payload: JSON.stringify(_params)
-    };
-
-    lambda.invoke(params, (err, _data) => {
-        if (err) {
-            reject(err);
-        } else {
-            resolve(_data.Payload);
-        }
-    });
-    
-});
-
 const signup = (username, email, password) => new Promise((resolve, reject) => {
     postUrl('https://auth.homegames.io', '/', {
         email,
@@ -223,13 +203,11 @@ const confirmUser = (username, code) => new Promise((resolve, reject) => {
 });
 
 const login = (username, password) => new Promise((resolve, reject) => {
-    console.log('dsfdsfdsbn');
     postUrl('https://auth.homegames.io', '/', {
         type: 'login',
         username,
         password
     }).then(data => {
-        console.log(data);
         resolve(JSON.parse(data));
     });
     
