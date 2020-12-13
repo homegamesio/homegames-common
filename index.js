@@ -45,15 +45,17 @@ const postUrl = (url, path, _payload, headers = {}) => new Promise((resolve, rej
         hostname = url.replace('http://', '');
     } 
 
+    Object.assign(headers, {
+        'Content-Type': 'application/json',
+        'Content-Length': payload.length
+    });
+
     const options = {
         hostname,
         path,
         port,
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': payload.length
-        }
+        headers
     };
 
     let responseData = '';
@@ -89,7 +91,7 @@ const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
 
     fs.readdir(dir, (err, files) => {
         files.forEach(file => {
-            if (file === 'cert.pem') {
+            if (file === 'fullchain.pem') {
                 certPath = path.join(dir, file);
             }
 
@@ -99,7 +101,7 @@ const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
         });
     
         if (!certPath) {
-            reject('Could not find cert.pem');
+            reject('Could not find fullchain.pem');
         }
 
         if (!keyPath) {
@@ -114,18 +116,33 @@ const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
 
 });
 
-const validateCertData = (certPaths) => new Promise((resolve, reject) => {
-    console.log('need to check');
-    console.log(certPaths.certPath);
-    console.log(certPaths.keyPath);
+const validateCertData = (certPaths, username, accessToken) => new Promise((resolve, reject) => {
+    postUrl('https://certifier.homegames.link', '/verify', {
+        checksum: ''
+    },
+    {
+        'hg-username': username,
+        'hg-access-token': accessToken
+    }).then(data => {
+        resolve(data);
+    }).catch(err => {
+        reject({
+            message: err.toString()
+        });
+    });
 
 });
 
-const validateExistingCerts = (certPath) => new Promise((resolve, reject) => {
+const validateExistingCerts = (certPath, username, accessToken) => new Promise((resolve, reject) => {
     guaranteeDir(certPath).then(() => {
         guaranteeCertFiles(certPath).then((certPaths) => {
-            validateCertData(certPaths).then(() => {
-                resolve();
+            validateCertData(certPath, username, accessToken).then((response) => {
+                const data = JSON.parse(response);
+                if (data.success) {
+                    resolve(); 
+                } else {
+                    reject();
+                }
             }).catch(err => {
                 reject(err);
             });
@@ -139,7 +156,6 @@ const validateExistingCerts = (certPath) => new Promise((resolve, reject) => {
 
 const guaranteeLoginFile = (loginPath) => new Promise((resolve, reject) => {
     fs.exists(path.join(loginPath, 'config'), (exists) => {
-        console.log('exists');
         if (exists) {
             resolve();
         } else {
@@ -150,9 +166,7 @@ const guaranteeLoginFile = (loginPath) => new Promise((resolve, reject) => {
 
 const validateLoginData = (loginPath) => new Promise((resolve, reject) => {
     guaranteeDir(loginPath).then(() => {
-        console.log("made login path");
         guaranteeLoginFile(loginPath).then((loginData) => {
-            console.log('guarantyeed ogin fie');
             resolve(loginData);
         }).catch(() => {
             reject('could not find login file');
@@ -162,19 +176,11 @@ const validateLoginData = (loginPath) => new Promise((resolve, reject) => {
 
 const certInit = (certPath, loginPath) => new Promise((resolve, reject) => {
     validateExistingCerts(certPath).then((certData) => {
-        console.log("GOT CERT DATA AT ");
-        console.log(certData);
     }).catch(err => {
-        console.log("ERRRRO");
-        console.log(err);
         validateLoginData(loginPath).then((loginData) => {
-            console.log("LOGIN DATA");
-            console.log(loginData);
             getUrl('https://certifier.homegames.link/get-certs').then(data => {
                 resolve(data);
             }).catch(err => {
-                console.error("Could not fetch cert");
-                console.error(err);
             });
         }).catch(err => {
             reject(err);
@@ -208,8 +214,30 @@ const login = (username, password) => new Promise((resolve, reject) => {
         type: 'login',
         username,
         password
-    }).then(data => {
-        resolve(JSON.parse(data));
+    }).then(_data => {
+        const data = JSON.parse(_data);
+        if (data.errorType) {
+            reject(data);
+        } else {
+            resolve(data);
+        }
+    });
+});
+
+const refreshAccessToken = (username, tokens) => new Promise((resolve, reject) => {
+    postUrl('https://auth.homegames.io', '/', {
+        type: 'refresh',
+        username, 
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        idToken: tokens.idToken
+    }).then(_data => {
+        const data = JSON.parse(_data);
+        if (data.accessToken && data.refreshToken) {
+            resolve(data);
+        } else {
+            reject();
+        }
     });
 });
 
@@ -220,11 +248,7 @@ const verifyAccessToken = (username, accessToken) => new Promise((resolve, rejec
         accessToken
     }).then(_data => {
         const data = JSON.parse(_data);
-        if (data.success) {
-            resolve();
-        } else {
-            reject();
-        }
+        resolve(data);
     });
 });
 
@@ -236,7 +260,7 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
 
                 try {
                     data = JSON.parse(_data);
-                    if (!data.username || !data.tokens) {
+                    if (!data.username || !data.tokens || data.errorType) {
                         throw new Error();
                     }
                 } catch (err) {
@@ -260,11 +284,14 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
 });
 
 const getCertData = (username, accessToken) => new Promise((resolve, reject) => {
+
     getUrl('https://certifier.homegames.link/get-certs', {
+
         'hg-username': username,
         'hg-access-token': accessToken
     }).then(data => {
         resolve(data);
+    }).catch(err => {
     });
 });
 
@@ -295,5 +322,6 @@ module.exports = {
     validateExistingCerts,
     getLoginInfo,
     verifyAccessToken,
+    refreshAccessToken,
     storeCertData
 };
