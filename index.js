@@ -1,10 +1,33 @@
 const https = require('https');
+const readline = require('readline');
+const WebSocket = require('ws');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const AWS = require('aws-sdk');
 const unzipper = require('unzipper');
 const { Readable } = require('stream');
+const os = require('os');
+
+const getUserHash = (username) => {
+	return crypto.createHash('md5').update(username).digest('hex');
+};
+
+const getLocalIP = () => {
+    const ifaces = os.networkInterfaces();
+    let localIP;
+
+    Object.keys(ifaces).forEach((ifname) => {
+        ifaces[ifname].forEach((iface) => {
+            if ('IPv4' !== iface.family || iface.internal) {
+                return;
+            }
+            localIP = localIP || iface.address;
+        });
+    });
+
+    return localIP;
+};
 
 const getUrl = (url, headers = {}) => new Promise((resolve, reject) => {
     const getModule = url.startsWith('https') ? https : http;
@@ -141,16 +164,25 @@ const validateExistingCerts = (certPath, username, accessToken) => new Promise((
                 if (data.success) {
                     resolve(); 
                 } else {
-                    reject();
+                    reject(data);
                 }
             }).catch(err => {
                 reject(err);
             });
         }).catch(err => {
-            reject(err);
+            getCertData(username, accessToken).then(certData => {
+                validateCertData(certPath, username, accessToken).then((response) => {
+                    const data = JSON.parse(response);
+                    if (data.success) {
+                        storeCertData(certData, certPath).then(() => {
+                            resolve(); 
+                        });
+                    } else {
+                        reject(data);
+                    }
+                });
+            });
         });
-    }).catch(err => {
-        reject(err);
     });
 });
 
@@ -248,7 +280,11 @@ const verifyAccessToken = (username, accessToken) => new Promise((resolve, rejec
         accessToken
     }).then(_data => {
         const data = JSON.parse(_data);
-        resolve(data);
+        if (data.errorType) {
+            reject(data);
+        } else {
+            resolve(data);
+        }
     });
 });
 
@@ -313,7 +349,83 @@ const storeCertData = (certBundle, path) => new Promise((resolve, reject) => {
     resolve();
 });
 
+const storeTokens = (path, username, tokens) => new Promise((resolve, reject) => {
+    const pathPieces = path.split('/');
+    let pathParent = [];
+    for (let x in pathPieces) {
+        if (x == pathPieces.length - 1) {
+            break
+        } else {
+            pathParent.push(pathPieces[x]);
+        }
+    }
+
+    guaranteeDir(pathParent.join('/')).then(() => {
+        const authData = {
+            username,
+            tokens
+        };
+        fs.writeFile(path, JSON.stringify(authData), (err) => {
+            if (err) {
+                reject('Failed to store tokens');
+            } else {
+                resolve();
+            }
+        });
+    });
+});
+
+const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => {
+
+    getLoginInfo(authPath).then(info => {
+        validateExistingCerts(certPath, info.username, info.tokens.accessToken).then(() => {
+            resolve({
+                certPath: certPath + '/fullchain.pem',
+                keyPath: certPath + '/privkey.pem'
+            });
+        }).catch(err => {
+            reject({message: err});
+        });
+    }).catch(err => {
+        console.log(err);
+    });
+});
+
+const linkInit = (authPath) => new Promise((resolve, reject) => {
+
+    getLoginInfo(authPath).then((loginInfo) => {
+        const client = new WebSocket('wss://www.homegames.link:7080');
+
+        client.on('open', () => {
+            console.log('opened connection to link');
+            client.send(JSON.stringify({
+                ip: getLocalIP(),
+                username: loginInfo.username,
+                accessToken: loginInfo.tokens.accessToken
+            }));
+        });
+    });
+
+});
+
+const promptLogin = () => new Promise((resolve, reject) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    }); 
+
+    rl.question('username:\n', (username) => {
+        rl.question('password:\n', (password) => {
+            resolve({
+                username,
+                password
+            });
+        });
+    });
+});
+
 module.exports = {
+    guaranteeCerts,
     certInit,
     getCertData,
     signup,
@@ -323,5 +435,9 @@ module.exports = {
     getLoginInfo,
     verifyAccessToken,
     refreshAccessToken,
-    storeCertData
+    storeCertData,
+    linkInit,
+    storeTokens,
+    promptLogin,
+    getUserHash
 };
