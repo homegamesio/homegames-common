@@ -11,7 +11,7 @@ const { Readable } = require('stream');
 const os = require('os');
 
 const getUserHash = (username) => {
-	return crypto.createHash('md5').update(username).digest('hex');
+    return crypto.createHash('md5').update(username).digest('hex');
 };
 
 const getLocalIP = () => {
@@ -295,6 +295,10 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
             fs.readFile(authPath, (err, _data) => {
                 let data;
 
+                if (!_data) {
+                    reject({type: 'DATA_NOT_FOUND'});
+                }
+
                 try {
                     data = JSON.parse(_data);
                     if (!data.username || !data.tokens || data.errorType) {
@@ -302,13 +306,15 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
                     }
                 } catch (err) {
                     reject({
-                        type: 'DATA_READ_ERROR'
+                        type: 'DATA_READ_ERROR',
+                        message: err
                     });
                 }
 
                 if (err) {
                     reject({
-                        type: 'DATA_READ_ERROR'
+                        type: 'DATA_READ_ERROR',
+                        message: err
                     });
                 }
 
