@@ -165,12 +165,25 @@ const validateExistingCerts = (certPath, username, accessToken) => new Promise((
                 if (data.success) {
                     resolve(); 
                 } else {
-                    reject(data);
+                    getCertData(username, accessToken).then(certData => {
+                        validateCertData(certPath, username, accessToken).then((response) => {
+                            const data = JSON.parse(response);
+                            if (data.success) {
+                                storeCertData(certData, certPath).then(() => {
+                                    resolve(); 
+                                });
+                            } else {
+                                reject(data);
+                            }
+                        });
+                    });
                 }
             }).catch(err => {
+                console.log(err);
                 reject(err);
             });
         }).catch(err => {
+            console.log(err);
             getCertData(username, accessToken).then(certData => {
                 validateCertData(certPath, username, accessToken).then((response) => {
                     const data = JSON.parse(response);
