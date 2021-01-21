@@ -452,7 +452,7 @@ const lockFile = (path) => new Promise((resolve, reject) => {
         const lockPath = `${path}.hglock`;
         fs.exists(lockPath, (exists) => {
             if (!exists) {
-                fs.writeFile(lockPath, pid, 'utf-8', () => {
+                fs.writeFile(lockPath, '' + pid, 'utf-8', () => {
                     clearInterval(_interval);
                     fs.readFile(lockPath, (err, data) => {
                         if (err) {
