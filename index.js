@@ -111,6 +111,7 @@ const guaranteeDir = (dir) => new Promise((resolve, reject) => {
 });
 
 const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
+
     let certPath, keyPath;
 
     fs.readdir(dir, (err, files) => {
@@ -364,9 +365,10 @@ const bufToStream = (buf) => {
 const storeCertData = (certBundle, path) => new Promise((resolve, reject) => {
     const certStream = bufToStream(certBundle);
 
-    certStream.pipe(unzipper.Extract({ path }));
+    const unzip = unzipper.Extract({ path });
+    certStream.pipe(unzip);
 
-    resolve();
+    unzip.on('close', resolve);
 });
 
 const storeTokens = (path, username, tokens) => new Promise((resolve, reject) => {
@@ -397,11 +399,20 @@ const storeTokens = (path, username, tokens) => new Promise((resolve, reject) =>
 
 const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => {
 
-    getLoginInfo(authPath).then(info => {
-        validateExistingCerts(certPath, info.username, info.tokens.accessToken).then(() => {
-            resolve({
-                certPath: certPath + '/fullchain.pem',
-                keyPath: certPath + '/privkey.pem'
+    authWorkflow(authPath).then(authInfo => {
+        getCertData(authInfo.username, authInfo.tokens.accessToken).then(certData => {
+            validateCertData(certPath, authInfo.username, authInfo.tokens.accessToken).then((response) => {
+                const data = JSON.parse(response);
+                if (data.success) {
+                    storeCertData(certData, certPath).then(() => {
+                        resolve({
+                            certPath: `${certPath}/fullchain.pem`,
+                            keyPath: `${certPath}/privkey.pem`,
+                        }); 
+                    });
+                } else {
+                    reject(data);
+                }
             });
         }).catch(err => {
             reject({message: err});
@@ -470,7 +481,7 @@ const lockFile = (path) => new Promise((resolve, reject) => {
         
     };
 
-    _interval = setInterval(acquireLock, 50);
+    _interval = setInterval(acquireLock, 1000);
 });
 
 const unlockFile = (path) => new Promise((resolve, reject) => {
