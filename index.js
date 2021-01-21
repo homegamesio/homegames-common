@@ -444,6 +444,98 @@ const promptLogin = () => new Promise((resolve, reject) => {
     });
 });
 
+const lockFile = (path) => new Promise((resolve, reject) => {
+    const pid = process.getuid();
+    let _interval;
+
+    const acquireLock = () => {
+        const lockPath = `${path}.hglock`;
+        fs.exists(lockPath, (exists) => {
+            if (!exists) {
+                fs.writeFile(lockPath, pid, 'utf-8', () => {
+                    clearInterval(_interval);
+                    fs.readFile(lockPath, (err, data) => {
+                        if (err) {
+                            console.log(err);
+                            reject(err);
+                        } else if (data.toString() === ''+ pid) {
+                                resolve();
+                        } else {
+                            reject('Mismatched PID');
+                        }
+                    });
+                });
+            }
+        });
+        
+    };
+
+    _interval = setInterval(acquireLock, 50);
+});
+
+const unlockFile = (path) => new Promise((resolve, reject) => {
+    const pid = process.getuid();
+    const lockPath = `${path}.hglock`;
+
+    fs.readFile(lockPath, (err, data) => {
+        if (data.toString() === '' + pid) {
+            fs.unlink(lockPath, (err) => {
+                if (!err) {
+                    resolve();
+                } else {
+                    reject('Could not delete lock');
+                }
+            });
+        } else {
+            reject('Tried to remove lock that wasnt ours');
+        }
+    });
+});
+
+const authWorkflow = (authPath) => new Promise((resolve, reject) => {
+    if (!authPath) {
+        reject(`No authPath provided`);
+    }
+
+    lockFile(authPath).then(() => {
+        getLoginInfo(authPath).then((loginInfo) => {
+            verifyAccessToken(loginInfo.username, loginInfo.tokens.accessToken).then(() => {
+                unlockFile(authPath).then(() => {
+                    resolve(loginInfo);
+                });
+            });
+        }).catch((err) => {
+            if (err.type === 'DATA_NOT_FOUND') {
+                promptLogin().then((loginInfo) => {
+                    login(loginInfo.username, loginInfo.password).then(tokens => {
+                        storeTokens(authPath, loginInfo.username, tokens).then(() => {
+                            verifyAccessToken(loginInfo.username, tokens.accessToken).then(() => {
+                                unlockFile(authPath).then(() => {
+                                    resolve({
+                                        username: loginInfo.username,
+                                        tokens
+                                    });
+                                });
+    
+                            });
+                        }).catch(err => {
+                            console.log('Failed to store auth tokens');
+                            reject(err);
+                        });
+                    }).catch(err => {
+                        console.log('Failed to login');
+                        reject(err);
+                    });
+                });
+            }
+        });
+    }).catch(err => {
+        console.log(err);
+        console.log("Failed to acquire lock");
+    });
+});
+
+
 module.exports = {
     guaranteeCerts,
     certInit,
@@ -459,5 +551,7 @@ module.exports = {
     linkInit,
     storeTokens,
     promptLogin,
-    getUserHash
+    getUserHash,
+    authWorkflow,
+    guaranteeDir
 };
