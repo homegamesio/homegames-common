@@ -455,8 +455,10 @@ const promptLogin = () => new Promise((resolve, reject) => {
     });
 });
 
+let _fakePid = 1;
 const lockFile = (path) => new Promise((resolve, reject) => {
-    const pid = process.getuid();
+    
+    const pid = process.getuid && process.getuid() || _fakePid++;
     let _interval;
 
     const acquireLock = () => {
