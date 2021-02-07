@@ -9,6 +9,7 @@ const unzipper = require('unzipper');
 const crypto = require('crypto');
 const { Readable } = require('stream');
 const os = require('os');
+const process = require('process');
 
 const getUserHash = (username) => {
     return crypto.createHash('md5').update(username).digest('hex');
@@ -474,6 +475,16 @@ const lockFile = (path) => new Promise((resolve, reject) => {
                         }
                     });
                 });
+            } else {
+                const { birthtime } = fs.statSync(lockPath);
+                const fiveMinsAgo = Date.now() - ( 1000 * 60 * 5 );
+                console.log(birthtime);
+                if (new Date(birthtime).getTime() < fiveMinsAgo) {
+                    fs.unlink(lockPath, (err) => {
+                        console.log(err);
+                        console.log('deleted');
+                    });
+                }
             }
         });
         
@@ -501,36 +512,44 @@ const authWorkflow = (authPath) => new Promise((resolve, reject) => {
         reject(`No authPath provided`);
     }
 
+    const _doLogin = () => {
+        promptLogin().then((loginInfo) => {
+            login(loginInfo.username, loginInfo.password).then(tokens => {
+                storeTokens(authPath, loginInfo.username, tokens).then(() => {
+                    verifyAccessToken(loginInfo.username, tokens.accessToken).then(() => {
+                        unlockFile(authPath).then(() => {
+                            resolve({
+                                username: loginInfo.username,
+                                tokens
+                            });
+                        });
+    
+                    });
+                }).catch(err => {
+                    console.log('Failed to store auth tokens');
+                    reject(err);
+                });
+            }).catch(err => {
+                console.log('Failed to login');
+                reject(err);
+            });
+        });
+    };
+
     lockFile(authPath).then(() => {
         getLoginInfo(authPath).then((loginInfo) => {
             verifyAccessToken(loginInfo.username, loginInfo.tokens.accessToken).then(() => {
                 unlockFile(authPath).then(() => {
                     resolve(loginInfo);
                 });
+            }).catch(err => {
+                console.log('failed to verify access token');
+                _doLogin();
             });
         }).catch((err) => {
+            console.log(err);
             if (err.type === 'DATA_NOT_FOUND') {
-                promptLogin().then((loginInfo) => {
-                    login(loginInfo.username, loginInfo.password).then(tokens => {
-                        storeTokens(authPath, loginInfo.username, tokens).then(() => {
-                            verifyAccessToken(loginInfo.username, tokens.accessToken).then(() => {
-                                unlockFile(authPath).then(() => {
-                                    resolve({
-                                        username: loginInfo.username,
-                                        tokens
-                                    });
-                                });
-    
-                            });
-                        }).catch(err => {
-                            console.log('Failed to store auth tokens');
-                            reject(err);
-                        });
-                    }).catch(err => {
-                        console.log('Failed to login');
-                        reject(err);
-                    });
-                });
+                _doLogin(); 
             }
         });
     }).catch(err => {
