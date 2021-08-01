@@ -342,7 +342,7 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
 });
 
 const getCertData = (username, accessToken) => new Promise((resolve, reject) => {
-    getUrl('https://certifier.homegames.link/get-cert', {
+    getUrl('https://certifier.homegames.io/get-cert', {
 
         'hg-username': username,
         'hg-token': accessToken
