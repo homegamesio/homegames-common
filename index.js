@@ -342,14 +342,15 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
 });
 
 const getCertData = (username, accessToken) => new Promise((resolve, reject) => {
-
-    getUrl('https://certifier.homegames.link/get-certs', {
+    getUrl('https://certifier.homegames.link/get-cert', {
 
         'hg-username': username,
-        'hg-access-token': accessToken
+        'hg-token': accessToken
     }).then(data => {
         resolve(data);
     }).catch(err => {
+        console.log(err);
+        reject();
     });
 });
 
@@ -402,19 +403,19 @@ const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => 
 
     authWorkflow(authPath).then(authInfo => {
         getCertData(authInfo.username, authInfo.tokens.accessToken).then(certData => {
-            validateCertData(certPath, authInfo.username, authInfo.tokens.accessToken).then((response) => {
-                const data = JSON.parse(response);
-                if (data.success) {
+            //validateCertData(certPath, authInfo.username, authInfo.tokens.accessToken).then((response) => {
+            //    const data = JSON.parse(response);
+            //    if (data.success) {
                     storeCertData(certData, certPath).then(() => {
                         resolve({
                             certPath: `${certPath}/fullchain.pem`,
                             keyPath: `${certPath}/privkey.pem`,
                         }); 
                     });
-                } else {
-                    reject(data);
-                }
-            });
+            //    } else {
+            //        reject(data);
+            //    }
+            //});
         }).catch(err => {
             reject({message: err});
         });
