@@ -117,17 +117,17 @@ const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
 
     fs.readdir(dir, (err, files) => {
         files.forEach(file => {
-            if (file === 'fullchain.pem') {
+            if (file === 'cert.pem') {
                 certPath = path.join(dir, file);
             }
 
-            if (file === 'privkey.pem') {
+            if (file === 'key.pem') {
                 keyPath = path.join(dir, file);
             }
         });
     
         if (!certPath) {
-            reject('Could not find fullchain.pem');
+            reject('Could not find cert.pem');
         }
 
         if (!keyPath) {
@@ -408,8 +408,8 @@ const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => 
             //    if (data.success) {
                     storeCertData(certData, certPath).then(() => {
                         resolve({
-                            certPath: `${certPath}/fullchain.pem`,
-                            keyPath: `${certPath}/privkey.pem`,
+                            certPath: `${certPath}/cert.pem`,
+                            keyPath: `${certPath}/key.pem`,
                         }); 
                     });
             //    } else {
