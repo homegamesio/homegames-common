@@ -1,6 +1,6 @@
 {
   "name": "homegames-common",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Homegames common tools",
   "main": "index.js",
   "scripts": {
@@ -19,6 +19,6 @@
   "dependencies": {
     "aws-sdk": "^2.809.0",
     "unzipper": "^0.10.11",
-    "ws": "^7.4.1"
+    "ws": "^7.5.4"
   }
 }
