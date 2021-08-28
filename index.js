@@ -143,19 +143,21 @@ const guaranteeCertFiles = (dir) => new Promise((resolve, reject) => {
 });
 
 const validateCertData = (certPaths, username, accessToken) => new Promise((resolve, reject) => {
-    postUrl('https://certifier.homegames.link', '/verify', {
-        checksum: ''
-    },
-    {
-        'hg-username': username,
-        'hg-access-token': accessToken
-    }).then(data => {
-        resolve(data);
-    }).catch(err => {
-        reject({
-            message: err.toString()
-        });
-    });
+	// one day
+	resolve(JSON.stringify({success: true}));
+//    postUrl('https://certifier.homegames.io', '/verify', {
+//        checksum: ''
+//    },
+//    {
+//        'hg-username': username,
+//        'hg-access-token': accessToken
+//    }).then(data => {
+//        resolve(data);
+//    }).catch(err => {
+//        reject({
+//            message: err.toString()
+//        });
+//    });
 
 });
 
@@ -226,7 +228,7 @@ const certInit = (certPath, loginPath) => new Promise((resolve, reject) => {
     validateExistingCerts(certPath).then((certData) => {
     }).catch(err => {
         validateLoginData(loginPath).then((loginData) => {
-            getUrl('https://certifier.homegames.link/get-certs').then(data => {
+            getUrl('https://certifier.homegames.io/get-certs').then(data => {
                 resolve(data);
             }).catch(err => {
             });
@@ -342,6 +344,7 @@ const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
 });
 
 const getCertData = (username, accessToken) => new Promise((resolve, reject) => {
+
     getUrl('https://certifier.homegames.io/get-cert', {
 
         'hg-username': username,
@@ -349,8 +352,8 @@ const getCertData = (username, accessToken) => new Promise((resolve, reject) => 
     }).then(data => {
         resolve(data);
     }).catch(err => {
-        console.log(err);
-        reject();
+	    console.log(err.toString());
+	    console.log('that was an error');
     });
 });
 
@@ -403,19 +406,19 @@ const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => 
 
     authWorkflow(authPath).then(authInfo => {
         getCertData(authInfo.username, authInfo.tokens.accessToken).then(certData => {
-            //validateCertData(certPath, authInfo.username, authInfo.tokens.accessToken).then((response) => {
-            //    const data = JSON.parse(response);
-            //    if (data.success) {
+            validateCertData(certPath, authInfo.username, authInfo.tokens.accessToken).then((response) => {
+                const data = JSON.parse(response);
+                if (data.success) {
                     storeCertData(certData, certPath).then(() => {
                         resolve({
                             certPath: `${certPath}/cert.pem`,
                             keyPath: `${certPath}/key.pem`,
                         }); 
                     });
-            //    } else {
-            //        reject(data);
-            //    }
-            //});
+                } else {
+                    reject(data);
+                }
+            });
         }).catch(err => {
             reject({message: err});
         });
@@ -465,6 +468,19 @@ const lockFile = (path) => new Promise((resolve, reject) => {
         const lockPath = `${path}.hglock`;
         fs.exists(lockPath, (exists) => {
             if (!exists) {
+const pathPieces = path.split('/');
+    let pathParent = [];
+    for (let x in pathPieces) {
+        if (x == pathPieces.length - 1) {
+            break
+        } else {
+            pathParent.push(pathPieces[x]);
+        }
+    }
+
+    guaranteeDir(pathParent.join('/')).then(() => {
+	    console.log("writing lock file");
+	    console.log(lockPath);
                 fs.writeFile(lockPath, 'lock', 'utf-8', () => {
                     clearInterval(_interval);
                     fs.readFile(lockPath, (err, data) => {
@@ -476,7 +492,9 @@ const lockFile = (path) => new Promise((resolve, reject) => {
                         }
                     });
                 });
+    });
             } else {
+		    console.log('waiting for lock');
                 const { birthtime } = fs.statSync(lockPath);
                 const fiveMinsAgo = Date.now() - ( 1000 * 60 * 5 );
                 console.log(birthtime);
@@ -537,6 +555,7 @@ const authWorkflow = (authPath) => new Promise((resolve, reject) => {
         });
     };
 
+	console.log('about to lock ' + authPath);
     lockFile(authPath).then(() => {
         getLoginInfo(authPath).then((loginInfo) => {
             verifyAccessToken(loginInfo.username, loginInfo.tokens.accessToken).then(() => {
@@ -579,3 +598,4 @@ module.exports = {
     authWorkflow,
     guaranteeDir
 };
+
