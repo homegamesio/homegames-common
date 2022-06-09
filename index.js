@@ -578,6 +578,53 @@ const authWorkflow = (authPath) => new Promise((resolve, reject) => {
     });
 });
 
+const getConfigValue = (key, _default = undefined) => {
+    const config = getConfig();
+
+    let envValue = process.env[key] && `${process.env[key]}`;
+    if (envValue !== undefined) {
+        if (envValue === 'true') {
+            envValue = true;
+        } else if (envValue === 'false') {
+            envValue = false;
+        }
+        console.log(`Using environment value: ${envValue} for key: ${key}`);
+        return envValue;
+    }
+    try {
+        if (config[key] === undefined) {
+            throw new Error(`No value for ${key} found in config`);
+        }
+        console.log(`Found value ${config[key]} in config`);
+        return config[key];
+    } catch(err) {
+        console.log(err);
+        if (_default === undefined) {
+            throw new Error(`No config value found for ${key}`);
+        } else {
+            console.log(`Could not find config for key ${key}. Using default: ${_default}`);
+            return _default;
+        }
+    }
+};
+
+
+const getConfig = () => {
+
+    const options = [process.cwd(), require.main.filename, process.mainModule.filename, __dirname]
+    let baseDir = process.cwd();
+    let _config = {};
+    
+    for (let i = 0; i < options.length; i++) {
+        if (fs.existsSync(`${options[i]}/config.js`)) {//src/util/config.js`)) {
+            console.log(`Using config at ${options[i]}`);
+            _config = require(`${options[i]}/config.js`);
+        }
+    }
+
+    return _config;
+}
+
 
 module.exports = {
     guaranteeCerts,
@@ -596,6 +643,8 @@ module.exports = {
     promptLogin,
     getUserHash,
     authWorkflow,
-    guaranteeDir
+    guaranteeDir,
+    getUrl,
+    getConfigValue
 };
 
