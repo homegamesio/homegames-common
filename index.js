@@ -591,36 +591,38 @@ const getConfigValue = (key, _default = undefined) => {
         console.log(`Using environment value: ${envValue} for key: ${key}`);
         return envValue;
     }
-    try {
-        if (config[key] === undefined) {
+        if (config[key] === undefined && _default === undefined) {
             throw new Error(`No value for ${key} found in config`);
+        } else if (config[key] === undefined && _default !== undefined) {
+            return _default;
         }
         console.log(`Found value ${config[key]} in config`);
         return config[key];
-    } catch(err) {
-        console.log(err);
-        if (_default === undefined) {
-            throw new Error(`No config value found for ${key}`);
-        } else {
-            console.log(`Could not find config for key ${key}. Using default: ${_default}`);
-            return _default;
-        }
-    }
 };
 
+let cachedConfig = {};
 
 const getConfig = () => {
+
+    if (Object.keys(cachedConfig).length > 0) {
+        return cachedConfig;
+    }
 
     const options = [process.cwd(), require.main.filename, process.mainModule.filename, __dirname]
     let baseDir = process.cwd();
     let _config = {};
     
     for (let i = 0; i < options.length; i++) {
-        if (fs.existsSync(`${options[i]}/config.js`)) {//src/util/config.js`)) {
+        if (fs.existsSync(`${options[i]}/config.json`)) {
             console.log(`Using config at ${options[i]}`);
-            _config = require(`${options[i]}/config.js`);
+            _config = JSON.parse(fs.readFileSync(`${options[i]}/config.json`));
         }
     }
+
+    console.log('using this config data');
+    console.log(_config);
+
+    cachedConfig = _config;
 
     return _config;
 }
