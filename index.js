@@ -609,18 +609,15 @@ const getConfig = () => {
     }
 
     const options = [process.cwd(), require.main.filename, process.mainModule.filename, __dirname]
-    let baseDir = process.cwd();
     let _config = {};
     
     for (let i = 0; i < options.length; i++) {
         if (fs.existsSync(`${options[i]}/config.json`)) {
             console.log(`Using config at ${options[i]}`);
             _config = JSON.parse(fs.readFileSync(`${options[i]}/config.json`));
+            break;
         }
     }
-
-    console.log('using this config data');
-    console.log(_config);
 
     cachedConfig = _config;
 
@@ -628,25 +625,89 @@ const getConfig = () => {
 }
 
 
+const getLogLevel = (logLevel = null) => {
+    const _logLevel = logLevel || getConfigValue('LOG_LEVEL', 'INFO');
+    const levelList = ['DISABLED', 'INFO', 'DEBUG'];
+
+    return levelList.indexOf(_logLevel);
+};
+
+const msgToString = (msg) => {
+    return typeof msg === 'object' ? JSON.stringify(msg) : msg;
+};
+
+const log = {
+    info: (msg, explanation = null) => {
+        const logLevel = getLogLevel();
+        const required = getLogLevel('INFO');
+
+        if (logLevel < required) {
+            return;
+        }
+
+        const logPath = getConfigValue('LOG_PATH');
+
+        const msgString = `[HOMEGAMES-INFO][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
+        fs.appendFile(logPath, msgString, (err) => {
+            if (err) {
+                console.error('failed log');
+                console.log(err);
+            }
+        });
+    },
+    error: (msg, explanation) => {
+        const logLevel = getLogLevel();
+        const required = getLogLevel('INFO');
+
+        if (logLevel < required) {
+            return;
+        }
+
+        const logPath = getConfigValue('LOG_PATH');
+
+        const msgString = `[HOMEGAMES-ERROR][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
+        fs.appendFile(logPath, msgString, (err) => {
+            if (err) {
+                console.error('failed log');
+                console.log(err);
+            }
+        });
+    },
+    debug: (msg, explanation) => {
+        const logLevel = getLogLevel();
+        const required = getLogLevel('DEBUG');
+        const logPath = getConfigValue('LOG_PATH');
+        
+        if (logLevel < required) {
+            return;
+        }
+
+        const msgString = `[HOMEGAMES-DEBUG][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
+        fs.appendFile(logPath, msgString, (err) => {
+            if (err) {
+                console.error('failed log');
+                console.log(err);
+            }
+        });
+
+    }
+
+}
+
+
 module.exports = {
-    guaranteeCerts,
-    certInit,
-    getCertData,
     signup,
     login,
     confirmUser,
-    validateExistingCerts,
     getLoginInfo,
     verifyAccessToken,
     refreshAccessToken,
-    storeCertData,
     linkInit,
-    storeTokens,
-    promptLogin,
     getUserHash,
     authWorkflow,
     guaranteeDir,
     getUrl,
-    getConfigValue
+    getConfigValue,
+    log
 };
 
