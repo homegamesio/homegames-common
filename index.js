@@ -645,7 +645,7 @@ const log = {
             return;
         }
 
-        const logPath = getConfigValue('LOG_PATH');
+        const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
 
         const msgString = `[HOMEGAMES-INFO][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
         fs.appendFile(logPath, msgString, (err) => {
@@ -663,7 +663,7 @@ const log = {
             return;
         }
 
-        const logPath = getConfigValue('LOG_PATH');
+        const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
 
         const msgString = `[HOMEGAMES-ERROR][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
         fs.appendFile(logPath, msgString, (err) => {
@@ -676,7 +676,8 @@ const log = {
     debug: (msg, explanation) => {
         const logLevel = getLogLevel();
         const required = getLogLevel('DEBUG');
-        const logPath = getConfigValue('LOG_PATH');
+
+        const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
         
         if (logLevel < required) {
             return;
