@@ -15,6 +15,22 @@ const getUserHash = (username) => {
     return crypto.createHash('md5').update(username).digest('hex');
 };
 
+const DEFAULT_CONFIG = {
+    "LINK_ENABLED": true,
+    "HOMENAMES_PORT": 7400,
+    "HOME_PORT": 9801,
+    "LOG_LEVEL": "INFO",
+    "GAME_SERVER_PORT_RANGE_MIN": 8300,
+    "GAME_SERVER_PORT_RANGE_MAX": 8400,
+    "IS_DEMO": false,
+    "BEZEL_SIZE_Y": 15,
+    "BEZEL_SIZE_X": 15,
+    "DOWNLOADED_GAME_DIRECTORY": "hg-games",
+    "LOG_PATH": "hg_log.txt",
+    "LOCAL_GAME_DIRECTORY": "local-games",
+    "PUBLIC_GAMES": false
+};
+
 const getLocalIP = () => {
     const ifaces = os.networkInterfaces();
     let localIP;
@@ -609,7 +625,7 @@ const getConfig = () => {
     }
 
     const options = [process.cwd(), require.main.filename, process.mainModule.filename, __dirname]
-    let _config = {};
+    let _config = null;
     
     for (let i = 0; i < options.length; i++) {
         if (fs.existsSync(`${options[i]}/config.json`)) {
@@ -618,6 +634,13 @@ const getConfig = () => {
             break;
         }
     }
+
+    if (!_config) {
+        _config = DEFAULT_CONFIG;
+    }
+
+    console.log('Using config: ');
+    console.log(_config);
 
     cachedConfig = _config;
 
