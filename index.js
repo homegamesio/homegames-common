@@ -17,6 +17,7 @@ const getUserHash = (username) => {
 
 const DEFAULT_CONFIG = {
     "LINK_ENABLED": true,
+    "HTTPS_ENABLED": true,
     "HOMENAMES_PORT": 7400,
     "HOME_PORT": 9801,
     "LOG_LEVEL": "INFO",
@@ -25,11 +26,10 @@ const DEFAULT_CONFIG = {
     "IS_DEMO": false,
     "BEZEL_SIZE_Y": 15,
     "BEZEL_SIZE_X": 15,
+    "PUBLIC_GAMES": true,
     "DOWNLOADED_GAME_DIRECTORY": "hg-games",
-    "LOG_PATH": "hg_log.txt",
-    "LOCAL_GAME_DIRECTORY": "local-games",
-    "PUBLIC_GAMES": false
-};
+    "LOG_PATH": "hg_log.txt"
+}
 
 const getLocalIP = () => {
     const ifaces = os.networkInterfaces();
@@ -446,7 +446,7 @@ const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => 
 const linkInit = (authPath) => new Promise((resolve, reject) => {
 
     getLoginInfo(authPath).then((loginInfo) => {
-        const client = new WebSocket('wss://www.homegames.link:7080');
+        const client = new WebSocket('wss://homegames.link:7080');
 
         client.on('open', () => {
             console.log('opened connection to link');
@@ -455,6 +455,11 @@ const linkInit = (authPath) => new Promise((resolve, reject) => {
                 username: loginInfo.username,
                 accessToken: loginInfo.tokens.accessToken
             }));
+        });
+
+        client.on('error', (err) => {
+            console.log('some error happened');
+            console.log(err);
         });
     });
 
