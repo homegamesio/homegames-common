@@ -726,13 +726,13 @@ const log = {
 const getAppDataPath = () => {
   switch (process.platform) {
     case "darwin": {
-      return path.join(process.env.HOME, "Library", "Application Support", "homegames");
+      return process.env.HOME ? path.join(process.env.HOME, "Library", "Application Support", "homegames") : __dirname;
     }
     case "win32": {
-      return path.join(process.env.APPDATA, "homegames");
+      return process.env.APPDATA ? path.join(process.env.APPDATA, "homegames") : __dirname;
     }
     case "linux": {
-      return path.join(process.env.HOME, ".homegames");
+      return process.env.HOME ? path.join(process.env.HOME, ".homegames") : __dirname;
     }
     default: {
       console.log("Unsupported platform!");
