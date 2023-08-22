@@ -724,6 +724,11 @@ const log = {
 }
 
 const getAppDataPath = () => {
+  if (!process) {
+    // this shouldnt be called if running in browser
+    return '';
+  }
+
   switch (process.platform) {
     case "darwin": {
       return process.env.HOME ? path.join(process.env.HOME, "Library", "Application Support", "homegames") : __dirname;
