@@ -664,42 +664,60 @@ const msgToString = (msg) => {
     return typeof msg === 'object' ? JSON.stringify(msg) : msg;
 };
 
+let electronLogger = null;
+
+try {
+    require.resolve('electron-log');
+    electronLogger = require('electron-log');
+} catch (err) { 
+    console.log('Logger not using electron. Logging to file.');
+}
+
+
 const log = {
     info: (msg, explanation = null) => {
-        const logLevel = getLogLevel();
-        const required = getLogLevel('INFO');
+        if (electronLogger) {
+            electronLogger.info(msgToString(msg));
+        } else {
+            const logLevel = getLogLevel();
+            const required = getLogLevel('INFO');
 
-        if (logLevel < required) {
-            return;
-        }
-
-        const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
-
-        const msgString = `[HOMEGAMES-INFO][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
-        fs.appendFile(logPath, msgString, (err) => {
-            if (err) {
-                console.error('failed log');
-                console.log(err);
+            if (logLevel < required) {
+                return;
             }
-        });
+
+            const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
+
+            const msgString = `[HOMEGAMES-INFO][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
+            fs.appendFile(logPath, msgString, (err) => {
+                if (err) {
+                    console.error('failed log');
+                    console.log(err);
+                }
+            });
+        }
     },
     error: (msg, explanation) => {
-        const logLevel = getLogLevel();
-        const required = getLogLevel('INFO');
+        if (electronLogger) {
+            electronLogger.error(msgToString(msg));
+        } else {
+            const logLevel = getLogLevel();
+            const required = getLogLevel('INFO');
 
-        if (logLevel < required) {
-            return;
-        }
-
-        const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
-
-        const msgString = `[HOMEGAMES-ERROR][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
-        fs.appendFile(logPath, msgString, (err) => {
-            if (err) {
-                console.error('failed log');
-                console.log(err);
+            if (logLevel < required) {
+                return;
             }
-        });
+
+            const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
+
+            const msgString = `[HOMEGAMES-ERROR][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
+            fs.appendFile(logPath, msgString, (err) => {
+                if (err) {
+                    console.error('failed log');
+                    console.log(err);
+                }
+            });
+        }
     },
     debug: (msg, explanation) => {
         const logLevel = getLogLevel();
