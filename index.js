@@ -666,13 +666,13 @@ const msgToString = (msg) => {
 
 let electronLogger = null;
 
-try {
-    require.resolve('electron-log');
-    electronLogger = require('electron-log');
-} catch (err) { 
-    console.log('Logger not using electron. Logging to file.');
+if (process.env.LOGGER_LOCATION) {
+    try {
+        electronLogger = require(process.env.LOGGER_LOCATION);
+    } catch (err) { 
+        console.log('Logger not using electron. Logging to file.');
+    }
 }
-
 
 const log = {
     info: (msg, explanation = null) => {
