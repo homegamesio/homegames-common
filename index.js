@@ -678,7 +678,7 @@ const log = {
     info: (msg, explanation = null) => {
         if (electronLogger) {
             electronLogger.info(msgToString(msg));
-        } else {
+        }// else {
             const logLevel = getLogLevel();
             const required = getLogLevel('INFO');
 
@@ -695,7 +695,7 @@ const log = {
                     console.log(err);
                 }
             });
-        }
+        //}
     },
     error: (msg, explanation) => {
         if (electronLogger) {
