@@ -700,15 +700,16 @@ const log = {
     error: (msg, explanation) => {
         if (electronLogger) {
             electronLogger.error(msgToString(msg));
-        } else {
+        }// else {
             const logLevel = getLogLevel();
             const required = getLogLevel('INFO');
 
             if (logLevel < required) {
-                return;
+            //    return;
             }
 
-            const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
+            //const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
+            const logPath = path.join(getAppDataPath(), 'hg-log.txt');//getConfigValue('LOG_PATH', 'hg_log.txt');
 
             const msgString = `[HOMEGAMES-ERROR][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
             fs.appendFile(logPath, msgString, (err) => {
@@ -717,7 +718,7 @@ const log = {
                     console.log(err);
                 }
             });
-        }
+        //}
     },
     debug: (msg, explanation) => {
         const logLevel = getLogLevel();
