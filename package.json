@@ -1,6 +1,6 @@
 {
   "name": "homegames-common",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Homegames common tools",
   "main": "index.js",
   "scripts": {

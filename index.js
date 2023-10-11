@@ -683,10 +683,10 @@ const log = {
             const required = getLogLevel('INFO');
 
             if (logLevel < required) {
-                return;
+//                return;
             }
 
-            const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
+            const logPath = path.join(getAppDataPath(), 'hg-log.txt');//getConfigValue('LOG_PATH', 'hg_log.txt');
 
             const msgString = `[HOMEGAMES-INFO][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
             fs.appendFile(logPath, msgString, (err) => {
