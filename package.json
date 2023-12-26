@@ -17,7 +17,6 @@
   },
   "homepage": "https://github.com/homegamesio/homegames-common#readme",
   "dependencies": {
-    "aws-sdk": "^2.1151.0",
     "unzipper": "^0.10.11",
     "ws": "^7.5.4"
   }

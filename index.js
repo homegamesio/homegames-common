@@ -4,7 +4,6 @@ const WebSocket = require('ws');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const AWS = require('aws-sdk');
 const unzipper = require('unzipper');
 const crypto = require('crypto');
 const { Readable } = require('stream');
