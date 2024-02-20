@@ -747,21 +747,31 @@ const getAppDataPath = () => {
     return '';
   }
 
+  let _path;
   switch (process.platform) {
     case "darwin": {
-      return process.env.HOME ? path.join(process.env.HOME, "Library", "Application Support", "homegames") : __dirname;
+      _path = process.env.HOME ? path.join(process.env.HOME, "Library", "Application Support", "homegames") : __dirname;
+      break;
     }
     case "win32": {
-      return process.env.APPDATA ? path.join(process.env.APPDATA, "homegames") : __dirname;
+      _path = process.env.APPDATA ? path.join(process.env.APPDATA, "homegames") : __dirname;
+      break;
     }
     case "linux": {
-      return process.env.HOME ? path.join(process.env.HOME, ".homegames") : __dirname;
+      _path = process.env.HOME ? path.join(process.env.HOME, ".homegames") : __dirname;
+      break;
     }
     default: {
       console.log("Unsupported platform!");
       process.exit(1);
     }
   }
+
+  if (!fs.existsSync(_path)) {
+    fs.mkdirSync(_path);
+  }
+
+  return _path;
 }
 
 module.exports = {
