@@ -15,19 +15,28 @@ const getUserHash = (username) => {
 };
 
 const DEFAULT_CONFIG = {
-    "LINK_ENABLED": true,
     "HTTPS_ENABLED": true,
+    "LINK_ENABLED": true,
     "HOMENAMES_PORT": 7400,
     "HOME_PORT": 9801,
     "LOG_LEVEL": "INFO",
     "GAME_SERVER_PORT_RANGE_MIN": 8300,
     "GAME_SERVER_PORT_RANGE_MAX": 8400,
     "IS_DEMO": false,
-    "BEZEL_SIZE_Y": 15,
-    "BEZEL_SIZE_X": 15,
-    "PUBLIC_GAMES": true,
+    "BEZEL_SIZE_X": 9,
+    "BEZEL_SIZE_Y": 9,
+    "HOTLOAD_ENABLED": false,
+    "PERFORMANCE_PROFILING": false,
     "DOWNLOADED_GAME_DIRECTORY": "hg-games",
-    "LOG_PATH": "hg_log.txt"
+    "LOG_PATH": "homegames_log.txt",
+    "PUBLIC_GAMES": false,
+    "ERROR_REPORTING": true,
+    "ERROR_REPORTING_ENDPOINT": "https://api.homegames.io/bugs",
+    "CERT_DOMAIN": "homegames.link",
+    "TESTS_ENABLED": true,
+    "API_URL": "https://api.homegames.io",
+    "LINK_PROXY_URL": "wss://public.homegames.link:81",
+    "LINK_URL": "wss://homegames.link"
 }
 
 const getLocalIP = () => {
@@ -598,6 +607,8 @@ const authWorkflow = (authPath) => new Promise((resolve, reject) => {
     });
 });
 
+const log = process.env.LOGGER_LOCATION ? require(process.env.LOGGER_LOCATION) : { info: (msg) => console.log(msg), error: (msg) => console.error(msg)};
+
 const getConfigValue = (key, _default = undefined) => {
     const config = getConfig();
 
@@ -608,15 +619,16 @@ const getConfigValue = (key, _default = undefined) => {
         } else if (envValue === 'false') {
             envValue = false;
         }
-        console.log(`Using environment value: ${envValue} for key: ${key}`);
+        log.info(`Using environment value: ${envValue} for key: ${key}`);
         return envValue;
     }
         if (config[key] === undefined && _default === undefined) {
             throw new Error(`No value for ${key} found in config`);
         } else if (config[key] === undefined && _default !== undefined) {
+            log.info(`Using default value (${_default}) for ${key}`);
             return _default;
         }
-        console.log(`Found value ${config[key]} in config`);
+        log.info(`Found value ${config[key]} for ${key} in config`);
         return config[key];
 };
 
@@ -633,7 +645,7 @@ const getConfig = () => {
     
     for (let i = 0; i < options.length; i++) {
         if (fs.existsSync(`${options[i]}/config.json`)) {
-            console.log(`Using config at ${options[i]}`);
+            log.info(`Found config at ${options[i]}`);
             _config = JSON.parse(fs.readFileSync(`${options[i]}/config.json`));
             break;
         }
@@ -643,8 +655,8 @@ const getConfig = () => {
         _config = DEFAULT_CONFIG;
     }
 
-    console.log('Using config: ');
-    console.log(_config);
+    log.info('Using config: ');
+    log.info(_config);
 
     cachedConfig = _config;
 
@@ -662,84 +674,6 @@ const getLogLevel = (logLevel = null) => {
 const msgToString = (msg) => {
     return typeof msg === 'object' ? JSON.stringify(msg) : msg;
 };
-
-let electronLogger = null;
-
-if (process.env.LOGGER_LOCATION) {
-    try {
-        electronLogger = require(process.env.LOGGER_LOCATION);
-    } catch (err) { 
-        console.log('Logger not using electron. Logging to file.');
-    }
-}
-
-const log = {
-    info: (msg, explanation = null) => {
-        if (electronLogger) {
-            electronLogger.info(msgToString(msg));
-        }// else {
-            const logLevel = getLogLevel();
-            const required = getLogLevel('INFO');
-
-            if (logLevel < required) {
-//                return;
-            }
-
-            const logPath = path.join(getAppDataPath(), 'hg-log.txt');//getConfigValue('LOG_PATH', 'hg_log.txt');
-
-            const msgString = `[HOMEGAMES-INFO][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
-            fs.appendFile(logPath, msgString, (err) => {
-                if (err) {
-                    console.error('failed log');
-                    console.log(err);
-                }
-            });
-        //}
-    },
-    error: (msg, explanation) => {
-        if (electronLogger) {
-            electronLogger.error(msgToString(msg));
-        }// else {
-            const logLevel = getLogLevel();
-            const required = getLogLevel('INFO');
-
-            if (logLevel < required) {
-            //    return;
-            }
-
-            //const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
-            const logPath = path.join(getAppDataPath(), 'hg-log.txt');//getConfigValue('LOG_PATH', 'hg_log.txt');
-
-            const msgString = `[HOMEGAMES-ERROR][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
-            fs.appendFile(logPath, msgString, (err) => {
-                if (err) {
-                    console.error('failed log');
-                    console.log(err);
-                }
-            });
-        //}
-    },
-    debug: (msg, explanation) => {
-        const logLevel = getLogLevel();
-        const required = getLogLevel('DEBUG');
-
-        const logPath = getConfigValue('LOG_PATH', 'hg_log.txt');
-        
-        if (logLevel < required) {
-            return;
-        }
-
-        const msgString = `[HOMEGAMES-DEBUG][${new Date().toTimeString()}] ${msgToString(msg)}${explanation ? ':' + os.EOL + msgToString(explanation) : ''}${os.EOL}${os.EOL}`;
-        fs.appendFile(logPath, msgString, (err) => {
-            if (err) {
-                console.error('failed log');
-                console.log(err);
-            }
-        });
-
-    }
-
-}
 
 const getAppDataPath = () => {
   if (!process) {
