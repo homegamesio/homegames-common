@@ -31,12 +31,12 @@ const DEFAULT_CONFIG = {
     "LOG_PATH": "homegames_log.txt",
     "PUBLIC_GAMES": false,
     "ERROR_REPORTING": true,
-    "ERROR_REPORTING_ENDPOINT": "https://api.codingcowboys.io/bugs",
-    "CERT_DOMAIN": "codingcowboys.io",
+    "ERROR_REPORTING_ENDPOINT": "https://api.homegames.io/bugs",
+    "CERT_DOMAIN": "homegames.link",
     "TESTS_ENABLED": true,
-    "API_URL": "https://api.codingcowboys.io",
-    "LINK_PROXY_URL": "wss://public.codingcowboys.io:81",
-    "LINK_URL": "wss://link.codingcowboys.io"
+    "API_URL": "https://api.homegames.io",
+    "LINK_PROXY_URL": "wss://public.homegames.link:81",
+    "LINK_URL": "wss://homegames.link"
 }
 
 const getLocalIP = () => {
