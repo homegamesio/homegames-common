@@ -607,7 +607,22 @@ const authWorkflow = (authPath) => new Promise((resolve, reject) => {
     });
 });
 
-const log = process.env.LOGGER_LOCATION ? require(process.env.LOGGER_LOCATION) : { info: (msg) => console.log(msg), error: (msg) => console.error(msg)};
+let electronLog = null;
+try {
+    electronLog = require('electron-log');
+} catch (err) { 
+    console.log('not running with electron');
+}
+
+const defaultLog = { info: (msg) => console.log(msg), error: (msg) => console.error(msg)};
+
+const log = electronLog == null ? 
+    (
+        process.env.LOGGER_LOCATION ? 
+            require(process.env.LOGGER_LOCATION) : defaultLog 
+    ) : electronLog;
+        
+log.info('doing this');
 
 const getConfigValue = (key, _default = undefined) => {
     const config = getConfig();
@@ -724,4 +739,5 @@ module.exports = {
     log,
     getAppDataPath
 };
+
 
