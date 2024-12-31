@@ -37,7 +37,7 @@ const DEFAULT_CONFIG = {
     "API_URL": "https://api.homegames.io",
     "LINK_PROXY_URL": "wss://public.homegames.link:81",
     "LINK_URL": "wss://homegames.link",
-    "MAP_ENABLED" false
+    "MAP_ENABLED": false
 }
 
 const getLocalIP = () => {
