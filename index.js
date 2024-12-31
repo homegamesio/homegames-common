@@ -29,7 +29,7 @@ const DEFAULT_CONFIG = {
     "PERFORMANCE_PROFILING": false,
     "DOWNLOADED_GAME_DIRECTORY": "hg-games",
     "LOG_PATH": "homegames_log.txt",
-    "PUBLIC_GAMES": false,
+    "PUBLIC_GAMES": true,
     "ERROR_REPORTING": true,
     "ERROR_REPORTING_ENDPOINT": "https://api.homegames.io/bugs",
     "CERT_DOMAIN": "homegames.link",
