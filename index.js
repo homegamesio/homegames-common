@@ -642,7 +642,7 @@ const getConfigValue = (key, _default = undefined) => {
             throw new Error(`No value for ${key} found in config`);
         } else if (config[key] === undefined && _default !== undefined) {
             log.info(`Using default value (${_default}) for ${key}`);
-            return _default;
+            return DEFAULT_CONFIG[key] || _default;
         }
         log.info(`Found value ${config[key]} for ${key} in config`);
         return config[key];
@@ -656,12 +656,14 @@ const getConfig = () => {
         return cachedConfig;
     }
 
-    const options = [process.cwd(), require.main.filename, process.mainModule.filename, __dirname]
+    const options = [getAppDataPath(), process.cwd(), require.main.filename, process.mainModule.filename, __dirname]
     let _config = null;
+    let configPath = null;
     
     for (let i = 0; i < options.length; i++) {
         if (fs.existsSync(`${options[i]}/config.json`)) {
             log.info(`Found config at ${options[i]}`);
+            configPath = options[i];
             _config = JSON.parse(fs.readFileSync(`${options[i]}/config.json`));
             break;
         }
@@ -671,7 +673,7 @@ const getConfig = () => {
         _config = DEFAULT_CONFIG;
     }
 
-    log.info('Using config: ');
+    log.info('Using config: ' + configPath);
     log.info(_config);
 
     cachedConfig = _config;
