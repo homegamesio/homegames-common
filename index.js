@@ -726,6 +726,12 @@ const getAppDataPath = () => {
   return _path;
 }
 
+// New shared modules
+const gameLoader = require('./game-loader');
+const dockerHelper = require('./docker-helper');
+const MiniGameSession = require('./mini-game-session');
+const GameSessionManager = require('./game-session-manager');
+
 module.exports = {
     signup,
     login,
@@ -740,7 +746,19 @@ module.exports = {
     getUrl,
     getConfigValue,
     log,
-    getAppDataPath
+    getAppDataPath,
+
+    // Game loading
+    gameLoader,
+    squishMap: gameLoader.squishMap,
+    DEFAULT_SQUISH_VERSION: gameLoader.DEFAULT_SQUISH_VERSION,
+
+    // Docker
+    dockerHelper,
+
+    // Sessions
+    MiniGameSession,
+    GameSessionManager,
 };
 
 

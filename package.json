@@ -1,6 +1,6 @@
 {
   "name": "homegames-common",
-  "version": "1.4.2",
+  "version": "1.5.0",
   "description": "Homegames common tools",
   "main": "index.js",
   "scripts": {
@@ -17,6 +17,8 @@
   },
   "homepage": "https://github.com/homegamesio/homegames-common#readme",
   "dependencies": {
+    "acorn": "^8.11.3",
+    "decompress": "^4.2.1",
     "unzipper": "^0.10.11",
     "ws": "^7.5.4"
   }
