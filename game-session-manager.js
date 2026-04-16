@@ -17,7 +17,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isDockerAvailable, ensureImage, runGameContainer, stopContainer, isContainerRunning } = require('./docker-helper');
+const { isDockerAvailable, isImageBuilt, ensureImage, runGameContainer, stopContainer, isContainerRunning } = require('./docker-helper');
 const { squishMap, DEFAULT_SQUISH_VERSION, fetchGameFromForgejo, loadGameClassFromPath, detectSquishVersion } = require('./game-loader');
 
 // ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ class GameSessionManager {
         if (this._dockerChecked) return this._dockerOk;
         this._dockerChecked = true;
 
-        if (!isDockerAvailable()) {
+        if (!(await isDockerAvailable())) {
             this.log.info('Docker not available — sessions will use fork()');
             this._dockerOk = false;
             return false;
@@ -120,8 +120,7 @@ class GameSessionManager {
             }
         } else {
             // No Dockerfile dir specified — check if image already exists
-            const { isImageBuilt } = require('./docker-helper');
-            this._dockerOk = isImageBuilt(this.dockerImageName);
+            this._dockerOk = await isImageBuilt(this.dockerImageName);
             if (this._dockerOk) {
                 this.log.info('Docker available, existing homegames-runner image found');
             } else {
@@ -452,7 +451,7 @@ class GameSessionManager {
         const session = this.sessions[sessionId];
         if (!session) return;
 
-        session._lifecycleInterval = setInterval(() => {
+        session._lifecycleInterval = setInterval(async () => {
             const s = this.sessions[sessionId];
             if (!s) {
                 clearInterval(session._lifecycleInterval);
@@ -460,7 +459,7 @@ class GameSessionManager {
             }
 
             if (s.type === 'docker') {
-                const running = isContainerRunning(s.containerId);
+                const running = await isContainerRunning(s.containerId);
                 this.log.info(`Session ${sessionId} lifecycle check: container running = ${running}`);
                 if (!running) {
                     this.log.info(`Session ${sessionId} container exited`);
