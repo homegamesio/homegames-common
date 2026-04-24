@@ -13,12 +13,13 @@
  */
 
 const { fork } = require('child_process');
+const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
 const { isDockerAvailable, isImageBuilt, ensureImage, runGameContainer, stopContainer, isContainerRunning } = require('./docker-helper');
-const { squishMap, DEFAULT_SQUISH_VERSION, fetchGameFromForgejo, loadGameClassFromPath, detectSquishVersion } = require('./game-loader');
+const { squishMap, DEFAULT_SQUISH_VERSION, fetchGameFromForgejo, loadGameClassFromPath, detectSquishVersion, parseSquishVersion } = require('./game-loader');
 
 // ---------------------------------------------------------------------------
 // Port pool
@@ -86,6 +87,7 @@ class GameSessionManager {
         this.lifecycleCheckMs = opts.lifecycleCheckMs || 10000;
         this.forgejo = opts.forgejo || {};
         this.saveDataRoot = opts.saveDataRoot || path.join(os.tmpdir(), 'hg-save-data');
+        this.assetCachePath = opts.assetCachePath || null;
         this.username = opts.username || null;
         this.certPath = opts.certPath || null;
         this.log = opts.log || { info: console.log, error: console.error };
@@ -194,9 +196,10 @@ class GameSessionManager {
             codePath = this._findProjectRoot(resolved) || path.dirname(resolved);
             // Tell the container where the entry point is relative to the mount
             gameEntryRelative = path.relative(codePath, resolved);
+            // Parse squish version from source via AST (no require) — safe for
+            // temp files / paths where squish packages aren't installed locally.
             try {
-                const GameClass = loadGameClassFromPath(resolved);
-                squishVersion = (GameClass.metadata && GameClass.metadata().squishVersion) || DEFAULT_SQUISH_VERSION;
+                squishVersion = parseSquishVersion(resolved);
             } catch (err) {
                 squishVersion = DEFAULT_SQUISH_VERSION;
             }
@@ -220,21 +223,23 @@ class GameSessionManager {
         const saveDataPath = path.join(this.saveDataRoot, `session-${sessionId}`);
 
         // Pass host config to the container so it can reach the local API,
-        // Homenames, etc. API_URL is critical for asset downloads.
+        // API_URL is used by Asset.js for downloading game assets.
+        // squish's Asset.js hardcodes https for downloads, so API_URL must
+        // use https://. Use the public API for asset downloads; Homenames
+        // access uses DOCKER_HOST_HOSTNAME separately.
         const extraEnv = {};
-        const hostApiUrl = process.env.API_URL;
-        if (hostApiUrl) {
-            // Rewrite localhost to host.docker.internal so the container can reach the host
-            extraEnv.API_URL = hostApiUrl.replace('localhost', 'host.docker.internal').replace('127.0.0.1', 'host.docker.internal');
-        } else {
-            extraEnv.API_URL = 'http://host.docker.internal:80';
-        }
+        extraEnv.API_URL = 'https://api.homegames.io';
+        // Homenames runs on the host — container reaches it via DOCKER_HOST_HOSTNAME
+        // which is set in docker-helper.js. HTTPS_ENABLED controls whether
+        // HomenamesHelper uses https — must be false for local dev.
+        extraEnv.HTTPS_ENABLED = 'false';
 
         const { containerId } = await runGameContainer({
             codePath,
             port,
             squishVersion,
             saveDataPath,
+            assetCachePath: this.assetCachePath,
             imageName: this.dockerImageName,
             gameEntryRelative,
             noFrame: input.noFrame || false,
@@ -299,8 +304,7 @@ class GameSessionManager {
         } else if (input.gamePath) {
             gamePath = path.resolve(input.gamePath);
             try {
-                const GameClass = loadGameClassFromPath(gamePath);
-                squishVersion = (GameClass.metadata && GameClass.metadata().squishVersion) || DEFAULT_SQUISH_VERSION;
+                squishVersion = parseSquishVersion(gamePath);
             } catch (err) {
                 squishVersion = DEFAULT_SQUISH_VERSION;
             }
@@ -571,10 +575,31 @@ class GameSessionManager {
     requestFromSession(sessionId, apiName) {
         return new Promise((resolve, reject) => {
             const session = this.sessions[sessionId];
-            if (!session || session.type !== 'fork') {
+            if (!session) {
                 resolve(null);
                 return;
             }
+
+            if (session.type === 'docker') {
+                // Docker sessions: use HTTP API on the session's port
+                const apiPath = apiName === 'getPlayers' ? '/api/players' : `/api/${apiName}`;
+                const req = http.get(`http://localhost:${session.port}${apiPath}`, (res) => {
+                    let buf = '';
+                    res.on('data', (chunk) => { buf += chunk; });
+                    res.on('end', () => {
+                        try { resolve(JSON.parse(buf)); } catch (e) { resolve(null); }
+                    });
+                });
+                req.on('error', () => resolve(null));
+                req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+                return;
+            }
+
+            if (session.type !== 'fork') {
+                resolve(null);
+                return;
+            }
+
             const requestId = ++session._requestIdCounter;
             session.requestCallbacks[requestId] = resolve;
             session.child.send(JSON.stringify({ api: apiName, requestId }));

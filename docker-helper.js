@@ -99,6 +99,7 @@ const runGameContainer = async ({
     port,
     squishVersion,
     saveDataPath,
+    assetCachePath = null,
     imageName = 'homegames-runner',
     memoryLimit = '256m',
     cpuLimit = '1',
@@ -141,6 +142,15 @@ const runGameContainer = async ({
             fs.mkdirSync(resolved, { recursive: true });
         }
         binds.push(`${resolved}:/app/save:rw`);
+    }
+
+    // Mount the host's asset cache so containers share downloaded assets
+    if (assetCachePath) {
+        const resolved = path.resolve(assetCachePath);
+        if (!fs.existsSync(resolved)) {
+            fs.mkdirSync(resolved, { recursive: true });
+        }
+        binds.push(`${resolved}:/root/.homegames/asset-cache:rw`);
     }
 
     // Parse memory limit to bytes if it's a human string (e.g. '256m')

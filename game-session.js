@@ -167,31 +167,44 @@ class GameSession {
         // If we have a Homenames adapter, do the full player setup flow:
         // generate a name for anonymous players, fetch settings, register listener.
         if (this.homenames) {
+            const notifyPlayer = (extraInfo) => {
+                if (extraInfo) {
+                    if (extraInfo.playerInfo) this.playerInfoMap[playerId] = extraInfo.playerInfo;
+                    if (extraInfo.playerSettings) this.playerSettingsMap[playerId] = extraInfo.playerSettings;
+                    if (extraInfo.clientInfo) this.clientInfoMap[playerId] = extraInfo.clientInfo;
+                }
+
+                const playerPayload = {
+                    playerId,
+                    settings: this.playerSettingsMap[playerId],
+                    info: this.playerInfoMap[playerId],
+                    clientInfo: this.clientInfoMap[playerId],
+                    requestedGame: playerOpts.requestedGame || null,
+                };
+
+                try { this.homenames.addListener(playerId); } catch (e) {}
+
+                if (this.frameHandler && this.frameHandler.handleNewPlayer) {
+                    this.frameHandler.handleNewPlayer(playerPayload);
+                }
+                this.game.handleNewPlayer && this.game.handleNewPlayer(playerPayload);
+                this._sendPlayerFrame(playerId, ws);
+            };
+
             const finishAdd = () => {
-                this.homenames.getPlayerInfo(playerId).then(playerInfo => {
-                    this.homenames.getPlayerSettings(playerId).then(playerSettings => {
-                        this.homenames.getClientInfo(playerId).then(clientInfo => {
-                            this.playerInfoMap[playerId] = playerInfo;
-                            this.clientInfoMap[playerId] = clientInfo;
-                            this.playerSettingsMap[playerId] = playerSettings;
-
-                            const playerPayload = {
-                                playerId,
-                                settings: this.playerSettingsMap[playerId],
-                                info: this.playerInfoMap[playerId],
-                                clientInfo: this.clientInfoMap[playerId],
-                                requestedGame: playerOpts.requestedGame || null,
-                            };
-
-                            this.homenames.addListener(playerId);
-
-                            if (this.frameHandler && this.frameHandler.handleNewPlayer) {
-                                this.frameHandler.handleNewPlayer(playerPayload);
-                            }
-                            this.game.handleNewPlayer && this.game.handleNewPlayer(playerPayload);
-                            this._sendPlayerFrame(playerId, ws);
-                        });
+                Promise.all([
+                    this.homenames.getPlayerInfo(playerId).catch(() => null),
+                    this.homenames.getPlayerSettings(playerId).catch(() => null),
+                    this.homenames.getClientInfo(playerId).catch(() => null),
+                ]).then(([playerInfo, playerSettings, clientInfo]) => {
+                    notifyPlayer({
+                        playerInfo: playerInfo || this.playerInfoMap[playerId],
+                        playerSettings: playerSettings || this.playerSettingsMap[playerId],
+                        clientInfo: clientInfo || this.clientInfoMap[playerId],
                     });
+                }).catch((err) => {
+                    console.error('[GameSession] Homenames fetch failed, proceeding without:', err);
+                    notifyPlayer();
                 });
             };
 
@@ -200,11 +213,13 @@ class GameSession {
                 finishAdd();
             } else {
                 const playerName = _generateName();
-                this.homenames.updatePlayerInfo(playerId, { playerName }).then(() => {
-                    this.homenames.updateClientInfo(playerId, playerOpts.clientInfo || {}).then(() => {
+                this.homenames.updatePlayerInfo(playerId, { playerName })
+                    .then(() => this.homenames.updateClientInfo(playerId, playerOpts.clientInfo || {}))
+                    .then(() => finishAdd())
+                    .catch((err) => {
+                        console.error('[GameSession] Homenames update failed, proceeding anyway:', err);
                         finishAdd();
                     });
-                });
             }
         } else {
             // No Homenames — simple path (no-frame / testing)
