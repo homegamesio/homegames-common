@@ -103,11 +103,21 @@ const runGameContainer = async ({
     memoryLimit = '256m',
     cpuLimit = '1',
     gameEntryRelative = null,
+    noFrame = false,
+    extraEnv = {},
 }) => {
     const env = [
         `GAME_PORT=${port}`,
         `SQUISH_VERSION=${squishVersion}`,
+        `NO_FRAME=${noFrame ? '1' : ''}`,
     ];
+
+    // Pass through extra environment variables from the host
+    for (const key in extraEnv) {
+        if (extraEnv[key] !== undefined && extraEnv[key] !== null) {
+            env.push(`${key}=${extraEnv[key]}`);
+        }
+    }
 
     if (gameEntryRelative) {
         env.push(`GAME_ENTRY=${gameEntryRelative}`);
@@ -339,6 +349,23 @@ const demuxDockerLogs = (buffer) => {
     return { stdout, stderr };
 };
 
+/**
+ * Stream logs from a running container.
+ * Returns a readable stream that emits { stream: 'stdout'|'stderr', data: string } objects.
+ * Caller should listen for 'data' and 'end'/'error' events.
+ */
+const streamContainerLogs = async (containerId) => {
+    const container = docker.getContainer(containerId);
+    const logStream = await container.logs({
+        follow: true,
+        stdout: true,
+        stderr: true,
+        timestamps: true,
+        since: 0,
+    });
+    return { logStream, demuxDockerLogs };
+};
+
 module.exports = {
     isDockerAvailable,
     isImageBuilt,
@@ -348,4 +375,5 @@ module.exports = {
     validateGame,
     stopContainer,
     isContainerRunning,
+    streamContainerLogs,
 };

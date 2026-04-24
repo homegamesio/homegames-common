@@ -219,6 +219,17 @@ class GameSessionManager {
         // Save data directory for this game
         const saveDataPath = path.join(this.saveDataRoot, `session-${sessionId}`);
 
+        // Pass host config to the container so it can reach the local API,
+        // Homenames, etc. API_URL is critical for asset downloads.
+        const extraEnv = {};
+        const hostApiUrl = process.env.API_URL;
+        if (hostApiUrl) {
+            // Rewrite localhost to host.docker.internal so the container can reach the host
+            extraEnv.API_URL = hostApiUrl.replace('localhost', 'host.docker.internal').replace('127.0.0.1', 'host.docker.internal');
+        } else {
+            extraEnv.API_URL = 'http://host.docker.internal:80';
+        }
+
         const { containerId } = await runGameContainer({
             codePath,
             port,
@@ -226,6 +237,8 @@ class GameSessionManager {
             saveDataPath,
             imageName: this.dockerImageName,
             gameEntryRelative,
+            noFrame: input.noFrame || false,
+            extraEnv,
         });
 
         const session = {
@@ -314,7 +327,7 @@ class GameSessionManager {
                 SQUISH_PATH: squishPkg,
             }, opts.env || {});
 
-            const child = fork(this.childServerPath, [], { env });
+            const child = fork(this.childServerPath, [], { env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
 
             child.send(JSON.stringify({
                 key: input.gameKey || path.basename(gamePath, '.js'),
@@ -324,6 +337,7 @@ class GameSessionManager {
                 player: opts.playerId ? { id: opts.playerId } : undefined,
                 username: this.username,
                 certPath: this.certPath,
+                noFrame: input.noFrame || false,
             }));
 
             const session = {
@@ -537,6 +551,7 @@ class GameSessionManager {
             type: s.type,
             squishVersion: s.squishVersion,
             gameKey: s.gameKey || null,
+            gameId: s.gameId || null,
         }));
     }
 
@@ -572,6 +587,27 @@ class GameSessionManager {
                 }
             }, 5000);
         });
+    }
+
+    /**
+     * Get a log stream for a session.
+     * For Docker sessions: streams container logs.
+     * For fork sessions: returns the child's stdout/stderr (if captured).
+     * Returns { type: 'docker'|'fork', stream?, child? }
+     */
+    async getSessionLogStream(sessionId) {
+        const session = this.sessions[sessionId];
+        if (!session) return null;
+
+        if (session.type === 'docker') {
+            const { streamContainerLogs } = require('./docker-helper');
+            const { logStream, demuxDockerLogs } = await streamContainerLogs(session.containerId);
+            return { type: 'docker', logStream, demuxDockerLogs };
+        } else if (session.type === 'fork') {
+            return { type: 'fork', child: session.child };
+        }
+
+        return null;
     }
 }
 
