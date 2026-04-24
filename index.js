@@ -729,7 +729,8 @@ const getAppDataPath = () => {
 // New shared modules
 const gameLoader = require('./game-loader');
 const dockerHelper = require('./docker-helper');
-const MiniGameSession = require('./mini-game-session');
+const GameSession = require('./game-session');
+const MiniGameSession = GameSession; // backward compat alias
 const GameSessionManager = require('./game-session-manager');
 
 module.exports = {
@@ -757,7 +758,8 @@ module.exports = {
     dockerHelper,
 
     // Sessions
-    MiniGameSession,
+    GameSession,
+    MiniGameSession, // backward compat alias for GameSession
     GameSessionManager,
 };
 

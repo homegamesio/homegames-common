@@ -8,7 +8,7 @@
  *
  * Consumers:
  *   - homegames-core HomegamesDashboard (startSession when player picks a game)
- *   - lib-testing server (Studio preview)
+ *   - Studio preview (via Homenames API)
  *   - homedome (could use for test-running a game, though it mainly uses validateGame)
  */
 
