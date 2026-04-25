@@ -205,7 +205,6 @@ const fetchGameFromForgejo = ({ forgejoUrl, forgejoToken, owner, repo, ref }) =>
 module.exports = {
     squishMap,
     DEFAULT_SQUISH_VERSION,
-    detectSquishVersion,
     parseSquishVersion,
     loadGameClass,
     loadGameClassFromPath,

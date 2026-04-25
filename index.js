@@ -10,10 +10,6 @@ const { Readable } = require('stream');
 const os = require('os');
 const process = require('process');
 
-const getUserHash = (username) => {
-    return crypto.createHash('md5').update(username).digest('hex');
-};
-
 const DEFAULT_CONFIG = {
     "HTTPS_ENABLED": true,
     "LINK_ENABLED": true,
@@ -129,206 +125,11 @@ const getAppDataPath = () => {
     return _path;
 };
 
-// ---------------------------------------------------------------------------
-// Auth helpers (used by homegames-web for self-hosted login flow)
-// ---------------------------------------------------------------------------
-
-const login = (username, password) => new Promise((resolve, reject) => {
-    postUrl('https://auth.homegames.io', '/', {
-        type: 'login',
-        username,
-        password
-    }).then(_data => {
-        const data = JSON.parse(_data);
-        if (data.errorType) reject(data);
-        else resolve(data);
-    }).catch(reject);
-});
-
-const verifyAccessToken = (username, accessToken) => new Promise((resolve, reject) => {
-    postUrl('https://auth.homegames.io', '/', {
-        type: 'verify',
-        username,
-        accessToken
-    }).then(_data => {
-        const data = JSON.parse(_data);
-        if (data.errorType) reject(data);
-        else resolve(data);
-    }).catch(reject);
-});
-
-const refreshAccessToken = (username, tokens) => new Promise((resolve, reject) => {
-    postUrl('https://auth.homegames.io', '/', {
-        type: 'refresh',
-        username,
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-        idToken: tokens.idToken
-    }).then(_data => {
-        const data = JSON.parse(_data);
-        if (data.accessToken && data.refreshToken) resolve(data);
-        else reject();
-    }).catch(reject);
-});
-
-const getLoginInfo = (authPath) => new Promise((resolve, reject) => {
-    if (!fs.existsSync(authPath)) {
-        reject({ type: 'DATA_NOT_FOUND' });
-        return;
-    }
-    fs.readFile(authPath, (err, _data) => {
-        if (err || !_data) {
-            reject({ type: 'DATA_READ_ERROR', message: err });
-            return;
-        }
-        try {
-            const data = JSON.parse(_data);
-            if (!data.username || !data.tokens || data.errorType) throw new Error('Invalid auth data');
-            resolve(data);
-        } catch (parseErr) {
-            reject({ type: 'DATA_READ_ERROR', message: parseErr });
-        }
-    });
-});
-
-// ---------------------------------------------------------------------------
-// Cert helpers (used by homegames-web and homegames-core for TLS setup)
-// ---------------------------------------------------------------------------
-
-const getCertData = (username, accessToken) => new Promise((resolve, reject) => {
-    getUrl('https://certifier.homegames.io/get-cert', {
-        'hg-username': username,
-        'hg-token': accessToken
-    }).then(resolve).catch(reject);
-});
-
-const bufToStream = (buf) => {
-    return new Readable({
-        read() { this.push(buf); this.push(null); }
-    });
-};
-
-const storeCertData = (certBundle, certPath) => new Promise((resolve, reject) => {
-    const certStream = bufToStream(certBundle);
-    const unzip = unzipper.Extract({ path: certPath });
-    certStream.pipe(unzip);
-    unzip.on('close', resolve);
-    unzip.on('error', reject);
-});
-
-const storeTokens = (tokenPath, username, tokens) => new Promise((resolve, reject) => {
-    const dir = path.dirname(tokenPath);
-    guaranteeDir(dir).then(() => {
-        fs.writeFile(tokenPath, JSON.stringify({ username, tokens }), (err) => {
-            if (err) reject('Failed to store tokens');
-            else resolve();
-        });
-    });
-});
-
-const lockFile = (filePath) => new Promise((resolve, reject) => {
-    const lockPath = `${filePath}.hglock`;
-    let _interval;
-
-    const acquireLock = () => {
-        if (!fs.existsSync(lockPath)) {
-            const dir = path.dirname(lockPath);
-            guaranteeDir(dir).then(() => {
-                fs.writeFile(lockPath, 'lock', 'utf-8', (err) => {
-                    if (err) { reject(err); return; }
-                    clearInterval(_interval);
-                    resolve();
-                });
-            });
-        } else {
-            const { birthtime } = fs.statSync(lockPath);
-            if (Date.now() - new Date(birthtime).getTime() > 5 * 60 * 1000) {
-                try { fs.unlinkSync(lockPath); } catch (e) {}
-            }
-        }
-    };
-
-    _interval = setInterval(acquireLock, 1000);
-    acquireLock();
-});
-
-const unlockFile = (filePath) => new Promise((resolve, reject) => {
-    const lockPath = `${filePath}.hglock`;
-    fs.unlink(lockPath, (err) => {
-        if (err) reject('Could not delete lock');
-        else resolve();
-    });
-});
-
-const promptLogin = () => new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question('username:\n', (username) => {
-        rl.question('password:\n', (password) => {
-            rl.close();
-            resolve({ username, password });
-        });
-    });
-});
-
-const authWorkflow = (authPath) => new Promise((resolve, reject) => {
-    if (!authPath) {
-        reject('No authPath provided');
-        return;
-    }
-
-    const _doLogin = () => {
-        promptLogin().then((loginInfo) => {
-            login(loginInfo.username, loginInfo.password).then(tokens => {
-                storeTokens(authPath, loginInfo.username, tokens).then(() => {
-                    verifyAccessToken(loginInfo.username, tokens.accessToken).then(() => {
-                        unlockFile(authPath).then(() => {
-                            resolve({ username: loginInfo.username, tokens });
-                        });
-                    });
-                }).catch(err => { reject(err); });
-            }).catch(err => { reject(err); });
-        });
-    };
-
-    lockFile(authPath).then(() => {
-        getLoginInfo(authPath).then((loginInfo) => {
-            verifyAccessToken(loginInfo.username, loginInfo.tokens.accessToken).then(() => {
-                unlockFile(authPath).then(() => { resolve(loginInfo); });
-            }).catch(() => { _doLogin(); });
-        }).catch((err) => {
-            if (err.type === 'DATA_NOT_FOUND') _doLogin();
-            else reject(err);
-        });
-    }).catch(reject);
-});
-
-const guaranteeCerts = (authPath, certPath) => new Promise((resolve, reject) => {
-    authWorkflow(authPath).then(authInfo => {
-        getCertData(authInfo.username, authInfo.tokens.accessToken).then(certData => {
-            storeCertData(certData, certPath).then(() => {
-                resolve({
-                    certPath: `${certPath}/cert.pem`,
-                    keyPath: `${certPath}/key.pem`,
-                });
-            }).catch(reject);
-        }).catch(reject);
-    }).catch(reject);
-});
-
-// ---------------------------------------------------------------------------
-// Logging
-// ---------------------------------------------------------------------------
-
-let electronLog = null;
-try { electronLog = require('electron-log'); } catch (err) {}
-
-const defaultLog = {
+const log = {
     info: (msg) => console.log(msg),
     error: (msg) => console.error(msg),
     debug: (msg) => console.log(msg),
 };
-
-const log = electronLog || (process.env.LOGGER_LOCATION ? require(process.env.LOGGER_LOCATION) : defaultLog);
 
 // ---------------------------------------------------------------------------
 // Config
@@ -396,18 +197,7 @@ const GameSessionManager = require('./game-session-manager');
 // ---------------------------------------------------------------------------
 
 module.exports = {
-    // Auth (used by homegames-web self-hosted login flow)
-    login,
-    getLoginInfo,
-    verifyAccessToken,
-    refreshAccessToken,
-    authWorkflow,
-
-    // Certs (used by homegames-web and homegames-core)
-    guaranteeCerts,
-
     // Utilities
-    getUserHash,
     guaranteeDir,
     getUrl,
     getConfigValue,
