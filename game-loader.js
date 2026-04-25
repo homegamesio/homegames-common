@@ -37,57 +37,41 @@ const squishMap = {
 const DEFAULT_SQUISH_VERSION = '135';
 
 // ---------------------------------------------------------------------------
-// Detect squish version from source code string (regex — fast, best-effort)
-// ---------------------------------------------------------------------------
-const detectSquishVersion = (code) => {
-    const match = code.match(/squishVersion\s*:\s*['"](\w+)['"]/);
-    return match ? match[1] : DEFAULT_SQUISH_VERSION;
-};
-
-// ---------------------------------------------------------------------------
 // Parse squish version from source file using AST (reliable, needs acorn)
 // Falls back to regex if acorn is unavailable or parsing fails.
 // ---------------------------------------------------------------------------
 const parseSquishVersion = (codePath) => {
     const code = fs.readFileSync(codePath, 'utf-8');
 
-    try {
-        const { Parser } = require('acorn');
-        const parsed = Parser.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+    const { Parser } = require('acorn');
+    const parsed = Parser.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
 
-        const foundGameClasses = parsed.body.filter(
-            n => n.type === 'ClassDeclaration' && n.superClass && n.superClass.name === 'Game'
-        );
+    const foundGameClasses = parsed.body.filter(
+        n => n.type === 'ClassDeclaration' && n.superClass && n.superClass.name === 'Game'
+    );
 
-        if (foundGameClasses.length !== 1) {
-            return detectSquishVersion(code);
-        }
-
-        const metadataMethods = foundGameClasses[0].body.body.filter(
-            n => n.key && n.key.name === 'metadata' && (n.kind === 'method' || n.static)
-        );
-
-        if (metadataMethods.length !== 1) {
-            return detectSquishVersion(code);
-        }
-
-        let foundVersion = null;
-
-        metadataMethods[0].value.body.body.forEach(n => {
-            if (n.type === 'ReturnStatement' && n.argument && n.argument.properties) {
-                const versionNodes = n.argument.properties.filter(
-                    p => p.key && p.key.name === 'squishVersion'
-                );
-                if (versionNodes.length === 1 && !foundVersion) {
-                    foundVersion = String(versionNodes[0].value.value);
-                }
-            }
-        });
-
-        return foundVersion || detectSquishVersion(code);
-    } catch (err) {
-        return detectSquishVersion(code);
+    if (foundGameClasses.length !== 1) {
+        throw new Error('Unable to parse squish version');
     }
+
+    const metadataMethods = foundGameClasses[0].body.body.filter(
+        n => n.key && n.key.name === 'metadata' && (n.kind === 'method' || n.static)
+    );
+
+    let foundVersion = null;
+
+    metadataMethods[0].value.body.body.forEach(n => {
+        if (n.type === 'ReturnStatement' && n.argument && n.argument.properties) {
+            const versionNodes = n.argument.properties.filter(
+                p => p.key && p.key.name === 'squishVersion'
+            );
+            if (versionNodes.length === 1 && !foundVersion) {
+                foundVersion = String(versionNodes[0].value.value);
+            }
+        }
+    });
+
+    return foundVersion;
 };
 
 // ---------------------------------------------------------------------------
@@ -114,9 +98,6 @@ const loadGameClass = (code, tmpDir) => {
     fs.writeFileSync(tmpPath, code);
     try {
         delete require.cache[require.resolve(tmpPath)];
-        console.log('wat');
-        console.log(tmpPath);
-        console.log(code);
         return require(tmpPath);
     } finally {
         try { fs.unlinkSync(tmpPath); } catch (e) { /* best-effort cleanup */ }
