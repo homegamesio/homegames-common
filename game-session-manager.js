@@ -88,6 +88,7 @@ class GameSessionManager {
         this.forgejo = opts.forgejo || {};
         this.saveDataRoot = opts.saveDataRoot || path.join(os.tmpdir(), 'hg-save-data');
         this.assetCachePath = opts.assetCachePath || null;
+        this.maxSessions = opts.maxSessions || 50;
         this.username = opts.username || null;
         this.certPath = opts.certPath || null;
         this.log = opts.log || { info: console.log, error: console.error };
@@ -149,6 +150,12 @@ class GameSessionManager {
      * @returns {Promise<{ sessionId, port, type: 'docker'|'fork' }>}
      */
     async startSession(input, opts = {}) {
+        // Cap concurrent sessions
+        const maxSessions = this.maxSessions || 50;
+        if (Object.keys(this.sessions).length >= maxSessions) {
+            throw new Error('Maximum concurrent sessions reached');
+        }
+
         const port = this.portPool.acquire();
         if (!port) {
             throw new Error('No available ports for new game session');
@@ -326,12 +333,39 @@ class GameSessionManager {
         const squishPkg = squishMap[squishVersion] || squishMap[DEFAULT_SQUISH_VERSION];
 
         return new Promise((resolve, reject) => {
-            const env = Object.assign({}, process.env, {
-                NODE_PATH: `${process.cwd()}${path.sep}node_modules`,
-                SQUISH_PATH: squishPkg,
-            }, opts.env || {});
+            // Allowlist environment variables for child processes.
+            // Only pass what the child needs — avoid leaking secrets
+            // (e.g. FORGEJO_ADMIN_TOKEN, auth tokens, etc.)
+            const ALLOWED_ENV_KEYS = [
+                'PATH', 'HOME', 'USER', 'LANG', 'TERM',
+                'NODE_ENV', 'NODE_PATH',
+                'SQUISH_PATH', 'API_URL', 'LOGGER_LOCATION',
+                'HTTPS_ENABLED', 'HOMENAMES_PORT', 'BEZEL_SIZE_X', 'BEZEL_SIZE_Y',
+                'DOCKER_HOST_HOSTNAME', 'GRACE_PERIOD_MS',
+            ];
+            const env = {};
+            for (const key of ALLOWED_ENV_KEYS) {
+                if (process.env[key] !== undefined) {
+                    env[key] = process.env[key];
+                }
+            }
+            // Apply required overrides (these take precedence)
+            env.NODE_PATH = `${process.cwd()}${path.sep}node_modules`;
+            env.SQUISH_PATH = squishPkg;
+            // opts.env is filtered through the same allowlist — no arbitrary injection
+            if (opts.env) {
+                for (const key of ALLOWED_ENV_KEYS) {
+                    if (opts.env[key] !== undefined) {
+                        env[key] = opts.env[key];
+                    }
+                }
+            }
 
-            const child = fork(this.childServerPath, [], { env, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+            const child = fork(this.childServerPath, [], {
+                env,
+                stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+                execArgv: ['--max-old-space-size=256'],
+            });
 
             child.send(JSON.stringify({
                 key: input.gameKey || path.basename(gamePath, '.js'),
@@ -375,13 +409,25 @@ class GameSessionManager {
 
             child.on('error', (err) => {
                 this.log.error(`Session ${sessionId} fork error: ${err.message}`);
-                this._cleanupSession(sessionId);
+                if (this.sessions[sessionId]) {
+                    this._cleanupSession(sessionId);
+                } else {
+                    // Session never registered — release port directly
+                    this.portPool.release(port);
+                    if (cleanupFn) cleanupFn();
+                }
                 reject(err);
             });
 
             child.on('close', () => {
                 this.log.info(`Session ${sessionId} fork closed`);
-                this._cleanupSession(sessionId);
+                if (this.sessions[sessionId]) {
+                    this._cleanupSession(sessionId);
+                } else {
+                    // Session never registered — release port directly
+                    this.portPool.release(port);
+                    if (cleanupFn) cleanupFn();
+                }
             });
         });
     }
@@ -518,6 +564,14 @@ class GameSessionManager {
 
         if (session._lifecycleInterval) {
             clearInterval(session._lifecycleInterval);
+        }
+
+        // Resolve any pending request callbacks so callers don't hang
+        if (session.requestCallbacks) {
+            for (const reqId in session.requestCallbacks) {
+                try { session.requestCallbacks[reqId](null); } catch (e) {}
+            }
+            session.requestCallbacks = {};
         }
 
         this.portPool.release(session.port);

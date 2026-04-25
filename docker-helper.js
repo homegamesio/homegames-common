@@ -160,10 +160,15 @@ const runGameContainer = async ({
         Image: imageName,
         Cmd: ['container-entry.js'],
         Env: env,
+        Labels: {
+            'homegames-session': 'true',
+            'homegames-port': String(port),
+        },
         ExposedPorts: {
             [`${port}/tcp`]: {},
         },
         HostConfig: {
+            AutoRemove: true,
             Binds: binds,
             PortBindings: {
                 [`${port}/tcp`]: [{ HostPort: String(port) }],
@@ -172,7 +177,9 @@ const runGameContainer = async ({
             NanoCpus: parseCpuLimit(cpuLimit),
             PidsLimit: 64,
             CapDrop: ['ALL'],
-            Tmpfs: { '/tmp': 'rw,size=64m' },
+            Tmpfs: {
+                '/tmp': 'rw,size=64m',
+            },
             ExtraHosts: extraHosts,
         },
     });

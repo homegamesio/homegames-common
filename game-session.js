@@ -12,7 +12,6 @@
  *       frame: { root, topLayerRoot, assets, bezelX, bezelY, isDashboard, ... },
  *       homenames: homenamesHelper,
  *       spectators: true,
- *       onPlayerMove: (playerId, port) => { ... },
  *   });
  *
  * Consumers:
@@ -20,9 +19,10 @@
  *   - homegames-common/game-session-manager.js
  */
 
+const WebSocket = require('ws');
 const { squishMap, DEFAULT_SQUISH_VERSION } = require('./game-loader');
 
-// Simple name generator for anonymous players (replaces homegames-core's dictionary-based one)
+// Simple name generator for anonymous players
 const _NAME_WORDS = [
     'chocolate', 'iguana', 'cardigan', 'enormous', 'gargantuan', 'orangutan',
     'cookies', 'monstera', 'daisy', 'grapefruit', 'blueberry', 'mango',
@@ -35,28 +35,13 @@ const _generateName = () => {
 };
 
 class GameSession {
-    /**
-     * @param {object} game        - Game instance (must have getLayers(), findNode(), etc.)
-     * @param {string} squishVersion - Squish version string (e.g. '135')
-     * @param {object} [opts]      - Optional features
-     * @param {object} [opts.frame]          - Frame/bezel config (enables bezel chrome)
-     * @param {object} [opts.frame.root]     - HomegamesRoot bottom-layer root node
-     * @param {object} [opts.frame.topLayerRoot] - HomegamesRoot top-layer root node
-     * @param {object} [opts.frame.assets]   - HomegamesRoot assets
-     * @param {number} [opts.frame.bezelX]   - Bezel X percentage (e.g. 10)
-     * @param {number} [opts.frame.bezelY]   - Bezel Y percentage (e.g. 10)
-     * @param {object} [opts.frame.handler]  - HomegamesRoot instance (for handleNewPlayer, etc.)
-     * @param {boolean} [opts.spectators]    - Enable spectator support
-     * @param {object} [opts.homenames]      - HomenamesHelper instance (or any adapter with same API)
-     * @param {function} [opts.onPlayerMove] - Called when a player should be redirected: (playerId, port) => {}
-     * @param {string} [opts.username]       - Username for homenames
-     * @param {number} [opts.port]           - Port this session is running on
-     */
     constructor(game, squishVersion, opts = {}) {
-        // Prefer SQUISH_PATH env var (set by host server to a fully-resolved path)
         const squishPkg = process.env.SQUISH_PATH
             || squishMap[squishVersion]
             || squishMap[DEFAULT_SQUISH_VERSION];
+        if (!squishPkg) {
+            throw new Error(`No squish package found for version "${squishVersion}"`);
+        }
         const { Squisher } = require(squishPkg);
 
         this.game = game;
@@ -68,8 +53,8 @@ class GameSession {
         this.frameEnabled = !!opts.frame;
         this.frame = opts.frame || null;
 
-        const bezelX = this.frameEnabled ? (this.frame.bezelX || 10) : 0;
-        const bezelY = this.frameEnabled ? (this.frame.bezelY || 10) : 0;
+        const bezelX = this.frameEnabled ? (this.frame.bezelX ?? 10) : 0;
+        const bezelY = this.frameEnabled ? (this.frame.bezelY ?? 10) : 0;
         this.bezelX = bezelX;
         this.bezelY = bezelY;
         this.scale = this.frameEnabled
@@ -105,7 +90,7 @@ class GameSession {
         this.squisher = new Squisher(squisherOpts);
         this.squisher.addListener(() => this._broadcastState());
 
-        this.gameMetadata = game.constructor.metadata ? game.constructor.metadata() : {};
+        this.gameMetadata = (typeof game.constructor.metadata === 'function') ? game.constructor.metadata() : {};
         this.aspectRatio = this.gameMetadata.aspectRatio || { x: 16, y: 9 };
 
         // Player / spectator maps  —  values are raw WebSocket objects
@@ -114,12 +99,12 @@ class GameSession {
         this.playerInfoMap = {};
         this.clientInfoMap = {};
         this.playerSettingsMap = {};
-        this.remotePlayerMap = {}; // tracks which player/spectator IDs connected via proxy
+        this.remotePlayerMap = {};
+        this.stateHistory = [];
 
         // Optional subsystems
         this.spectatorsEnabled = !!opts.spectators;
         this.homenames = opts.homenames || null;
-        this.onPlayerMove = opts.onPlayerMove || null;
 
         // Frame handler (HomegamesRoot instance)
         this.frameHandler = (this.frame && this.frame.handler) || null;
@@ -131,43 +116,37 @@ class GameSession {
 
     initialize() {
         if (this._initialized) return Promise.resolve();
-        return this.squisher.initialize
-            ? this.squisher.initialize().then(() => { this._initialized = true; })
-            : Promise.resolve();
+        if (this.squisher.initialize) {
+            return this.squisher.initialize().then(() => { this._initialized = true; });
+        }
+        this._initialized = true;
+        return Promise.resolve();
     }
 
     // -----------------------------------------------------------------------
     // Player management
     // -----------------------------------------------------------------------
 
-    /**
-     * Add a player to the session.
-     *
-     * @param {number} playerId
-     * @param {WebSocket} ws
-     * @param {object} [playerOpts]
-     * @param {object} [playerOpts.clientInfo]    - Client device info
-     * @param {object} [playerOpts.info]          - Player info (name, etc.) from homenames
-     * @param {object} [playerOpts.settings]      - Player settings from homenames
-     * @param {string} [playerOpts.requestedGame] - Game the player initially requested
-     * @param {boolean} [playerOpts.isRemote]     - Whether the player connected via proxy
-     */
     addPlayer(playerId, ws, playerOpts = {}) {
+        // If this ID is already connected, disconnect the old one first
+        if (this.players[playerId]) {
+            this.removePlayer(playerId);
+        }
+
         this.players[playerId] = ws;
         this.playerInfoMap[playerId] = playerOpts.info || {};
         this.clientInfoMap[playerId] = playerOpts.clientInfo || {};
         this.playerSettingsMap[playerId] = playerOpts.settings || { SOUND: true };
         if (playerOpts.isRemote) this.remotePlayerMap[playerId] = true;
 
-        // Send asset bundle if available
         if (this.squisher.assetBundle) {
             this._send(ws, this.squisher.assetBundle);
         }
 
-        // If we have a Homenames adapter, do the full player setup flow:
-        // generate a name for anonymous players, fetch settings, register listener.
         if (this.homenames) {
             const notifyPlayer = (extraInfo) => {
+                if (!this.players[playerId]) return; // disconnected during async
+
                 if (extraInfo) {
                     if (extraInfo.playerInfo) this.playerInfoMap[playerId] = extraInfo.playerInfo;
                     if (extraInfo.playerSettings) this.playerSettingsMap[playerId] = extraInfo.playerSettings;
@@ -182,12 +161,24 @@ class GameSession {
                     requestedGame: playerOpts.requestedGame || null,
                 };
 
-                try { this.homenames.addListener(playerId); } catch (e) {}
-
-                if (this.frameHandler && this.frameHandler.handleNewPlayer) {
-                    this.frameHandler.handleNewPlayer(playerPayload);
+                try { this.homenames.addListener(playerId); } catch (e) {
+                    console.error('[GameSession] homenames.addListener failed:', e.message);
                 }
-                this.game.handleNewPlayer && this.game.handleNewPlayer(playerPayload);
+
+                try {
+                    if (this.frameHandler && this.frameHandler.handleNewPlayer) {
+                        this.frameHandler.handleNewPlayer(playerPayload);
+                    }
+                } catch (e) {
+                    console.error('[GameSession] frameHandler.handleNewPlayer threw:', e);
+                }
+
+                try {
+                    this.game.handleNewPlayer && this.game.handleNewPlayer(playerPayload);
+                } catch (e) {
+                    console.error('[GameSession] game.handleNewPlayer threw:', e);
+                }
+
                 this._sendPlayerFrame(playerId, ws);
             };
 
@@ -203,7 +194,7 @@ class GameSession {
                         clientInfo: clientInfo || this.clientInfoMap[playerId],
                     });
                 }).catch((err) => {
-                    console.error('[GameSession] Homenames fetch failed, proceeding without:', err);
+                    console.error('[GameSession] Homenames fetch failed:', err);
                     notifyPlayer();
                 });
             };
@@ -216,13 +207,9 @@ class GameSession {
                 this.homenames.updatePlayerInfo(playerId, { playerName })
                     .then(() => this.homenames.updateClientInfo(playerId, playerOpts.clientInfo || {}))
                     .then(() => finishAdd())
-                    .catch((err) => {
-                        console.error('[GameSession] Homenames update failed, proceeding anyway:', err);
-                        finishAdd();
-                    });
+                    .catch(() => finishAdd());
             }
         } else {
-            // No Homenames — simple path (no-frame / testing)
             const playerPayload = {
                 playerId,
                 settings: this.playerSettingsMap[playerId],
@@ -231,19 +218,37 @@ class GameSession {
                 requestedGame: playerOpts.requestedGame || null,
             };
 
-            if (this.frameHandler && this.frameHandler.handleNewPlayer) {
-                this.frameHandler.handleNewPlayer(playerPayload);
+            try {
+                if (this.frameHandler && this.frameHandler.handleNewPlayer) {
+                    this.frameHandler.handleNewPlayer(playerPayload);
+                }
+            } catch (e) {
+                console.error('[GameSession] frameHandler.handleNewPlayer threw:', e);
             }
-            this.game.handleNewPlayer && this.game.handleNewPlayer(playerPayload);
+
+            try {
+                this.game.handleNewPlayer && this.game.handleNewPlayer(playerPayload);
+            } catch (e) {
+                console.error('[GameSession] game.handleNewPlayer threw:', e);
+            }
+
             this._sendPlayerFrame(playerId, ws);
         }
     }
 
     removePlayer(playerId) {
-        this.game.handlePlayerDisconnect && this.game.handlePlayerDisconnect(playerId);
+        try {
+            this.game.handlePlayerDisconnect && this.game.handlePlayerDisconnect(playerId);
+        } catch (e) {
+            console.error('[GameSession] game.handlePlayerDisconnect threw:', e);
+        }
 
-        if (this.frameHandler && this.frameHandler.handlePlayerDisconnect) {
-            this.frameHandler.handlePlayerDisconnect(playerId);
+        try {
+            if (this.frameHandler && this.frameHandler.handlePlayerDisconnect) {
+                this.frameHandler.handlePlayerDisconnect(playerId);
+            }
+        } catch (e) {
+            console.error('[GameSession] frameHandler.handlePlayerDisconnect threw:', e);
         }
 
         delete this.players[playerId];
@@ -254,7 +259,7 @@ class GameSession {
     }
 
     // -----------------------------------------------------------------------
-    // Spectator management (only active when spectatorsEnabled)
+    // Spectator management
     // -----------------------------------------------------------------------
 
     addSpectator(spectatorId, ws, spectatorOpts = {}) {
@@ -267,16 +272,24 @@ class GameSession {
             this._send(ws, this.squisher.assetBundle);
         }
 
-        if (this.frameHandler && this.frameHandler.handleNewSpectator) {
-            this.frameHandler.handleNewSpectator({ id: spectatorId, ws });
+        try {
+            if (this.frameHandler && this.frameHandler.handleNewSpectator) {
+                this.frameHandler.handleNewSpectator({ id: spectatorId, ws });
+            }
+        } catch (e) {
+            console.error('[GameSession] frameHandler.handleNewSpectator threw:', e);
         }
 
         this._sendPlayerFrame(spectatorId, ws);
     }
 
     removeSpectator(spectatorId) {
-        if (this.frameHandler && this.frameHandler.handleSpectatorDisconnect) {
-            this.frameHandler.handleSpectatorDisconnect(spectatorId);
+        try {
+            if (this.frameHandler && this.frameHandler.handleSpectatorDisconnect) {
+                this.frameHandler.handleSpectatorDisconnect(spectatorId);
+            }
+        } catch (e) {
+            console.error('[GameSession] frameHandler.handleSpectatorDisconnect threw:', e);
         }
         delete this.spectators[spectatorId];
         delete this.remotePlayerMap[spectatorId];
@@ -290,11 +303,19 @@ class GameSession {
         this.playerInfoMap[playerId] = info;
         this.playerSettingsMap[playerId] = settings;
 
-        if (this.frameHandler && this.frameHandler.handlePlayerUpdate) {
-            this.frameHandler.handlePlayerUpdate(playerId, { info, settings });
+        try {
+            if (this.frameHandler && this.frameHandler.handlePlayerUpdate) {
+                this.frameHandler.handlePlayerUpdate(playerId, { info, settings });
+            }
+        } catch (e) {
+            console.error('[GameSession] frameHandler.handlePlayerUpdate threw:', e);
         }
 
-        this.game.handlePlayerUpdate && this.game.handlePlayerUpdate(playerId, { info, settings });
+        try {
+            this.game.handlePlayerUpdate && this.game.handlePlayerUpdate(playerId, { info, settings });
+        } catch (e) {
+            console.error('[GameSession] game.handlePlayerUpdate threw:', e);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -302,41 +323,52 @@ class GameSession {
     // -----------------------------------------------------------------------
 
     handleInput(playerId, input) {
-        if (input.type === 'click') {
-            this._handleClick(Number(playerId), input.data);
-        } else if (input.type === 'keydown') {
-            this.game.handleKeyDown && this.game.handleKeyDown(Number(playerId), input.key);
-        } else if (input.type === 'keyup') {
-            this.game.handleKeyUp && this.game.handleKeyUp(Number(playerId), input.key);
-        } else if (input.type === 'mouseup') {
-            this.game.handleMouseUp && this.game.handleMouseUp(playerId, input.data);
-        } else if (input.type === 'input') {
-            if (input.gamepad) {
-                this.game.handleGamepadInput && this.game.handleGamepadInput(Number(playerId), input);
-            } else {
-                const topLayer = this.frameEnabled
-                    ? this.frame.topLayerRoot
-                    : null;
-                const node = this.game.findNode(input.nodeId)
-                    || (topLayer && topLayer.findChild(input.nodeId));
-                if (node && node.node.input) {
-                    if (node.node.input.type === 'file') {
-                        node.node.input.oninput(playerId, Object.values(input.input));
-                    } else {
-                        node.node.input.oninput(playerId, input.input);
+        if (!input || typeof input !== 'object' || typeof input.type !== 'string') return;
+        if (!this.players[playerId] && !this.spectators[playerId]) return;
+
+        const pid = Number(playerId);
+
+        try {
+            if (input.type === 'click') {
+                const data = input.data;
+                if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
+                this._handleClick(pid, data);
+            } else if (input.type === 'keydown') {
+                if (typeof input.key !== 'string' || input.key.length > 20) return;
+                this.game.handleKeyDown && this.game.handleKeyDown(pid, input.key);
+            } else if (input.type === 'keyup') {
+                if (typeof input.key !== 'string' || input.key.length > 20) return;
+                this.game.handleKeyUp && this.game.handleKeyUp(pid, input.key);
+            } else if (input.type === 'mouseup') {
+                this.game.handleMouseUp && this.game.handleMouseUp(pid, input.data);
+            } else if (input.type === 'input') {
+                if (input.gamepad) {
+                    this.game.handleGamepadInput && this.game.handleGamepadInput(pid, input);
+                } else {
+                    const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
+                    const node = this.game.findNode(input.nodeId)
+                        || (topLayer && topLayer.findChild(input.nodeId));
+                    if (node && node.node && node.node.input) {
+                        if (node.node.input.type === 'file') {
+                            node.node.input.oninput(pid, Object.values(input.input || {}));
+                        } else {
+                            node.node.input.oninput(pid, input.input);
+                        }
                     }
                 }
+            } else if (input.type === 'onhover') {
+                const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
+                const node = this.game.findNode(input.nodeId)
+                    || (topLayer && topLayer.findChild(input.nodeId));
+                if (node && node.node?.onHover) node.node.onHover(pid);
+            } else if (input.type === 'offhover') {
+                const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
+                const node = this.game.findNode(input.nodeId)
+                    || (topLayer && topLayer.findChild(input.nodeId));
+                if (node && node.node?.offHover) node.node.offHover(pid);
             }
-        } else if (input.type === 'onhover') {
-            const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-            const node = this.game.findNode(input.nodeId)
-                || (topLayer && topLayer.findChild(input.nodeId));
-            if (node && node.node?.onHover) node.node.onHover(playerId);
-        } else if (input.type === 'offhover') {
-            const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-            const node = this.game.findNode(input.nodeId)
-                || (topLayer && topLayer.findChild(input.nodeId));
-            if (node && node.node?.offHover) node.node.offHover(playerId);
+        } catch (e) {
+            console.error(`[GameSession] Error handling input type="${input.type}" for player ${pid}:`, e);
         }
     }
 
@@ -356,7 +388,7 @@ class GameSession {
     }
 
     // -----------------------------------------------------------------------
-    // Session navigation (frame mode only)
+    // Session navigation
     // -----------------------------------------------------------------------
 
     movePlayer(playerId, port) {
@@ -395,8 +427,14 @@ class GameSession {
     }
 
     destroy() {
-        if (this.game.destroy) this.game.destroy();
-        if (this.game.clearAllTimers) this.game.clearAllTimers();
+        try { if (this.game.destroy) this.game.destroy(); } catch (e) {}
+        try { if (this.game.clearAllTimers) this.game.clearAllTimers(); } catch (e) {}
+        this.players = {};
+        this.spectators = {};
+        this.playerInfoMap = {};
+        this.clientInfoMap = {};
+        this.playerSettingsMap = {};
+        this.remotePlayerMap = {};
     }
 
     // -----------------------------------------------------------------------
@@ -405,18 +443,24 @@ class GameSession {
 
     _broadcastState() {
         for (const pid in this.players) {
-            this._sendPlayerFrame(pid, this.players[pid]);
+            try {
+                this._sendPlayerFrame(pid, this.players[pid]);
+            } catch (e) {
+                console.error(`[GameSession] Broadcast failed for player ${pid}:`, e);
+            }
         }
         for (const sid in this.spectators) {
-            this._sendPlayerFrame(sid, this.spectators[sid]);
+            try {
+                this._sendPlayerFrame(sid, this.spectators[sid]);
+            } catch (e) {
+                console.error(`[GameSession] Broadcast failed for spectator ${sid}:`, e);
+            }
         }
     }
 
     _sendPlayerFrame(playerId, ws) {
         let frame = this.squisher.getPlayerFrame(playerId);
-        if (!frame) {
-            frame = this.squisher.state;
-        }
+        if (!frame) frame = this.squisher.state;
         if (frame) {
             const flat = Array.isArray(frame) ? frame.flat() : frame;
             this._send(ws, flat);
@@ -424,9 +468,12 @@ class GameSession {
     }
 
     _send(ws, data) {
-        const WebSocket = require('ws');
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === 1) {
-            ws.send(Buffer.from(data));
+        try {
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === 1) {
+                ws.send(Buffer.from(data));
+            }
+        } catch (e) {
+            // Swallow send errors — client likely disconnected
         }
     }
 
@@ -435,38 +482,34 @@ class GameSession {
     // -----------------------------------------------------------------------
 
     _handleClick(playerId, click) {
-        if (click.x >= 100 || click.y >= 100) return;
+        if (!click || typeof click.x !== 'number' || typeof click.y !== 'number') return;
+        if (click.x < 0 || click.y < 0 || click.x >= 100 || click.y >= 100) return;
 
         const spectating = this.spectatorsEnabled && !!this.spectators[playerId];
         const clickedNode = this._findClick(click.x, click.y, spectating, playerId);
 
         if (clickedNode) {
-            const bottomLayer = this.frameEnabled
-                ? this.frame.root
-                : null;
-            const topLayer = this.frameEnabled
-                ? this.frame.topLayerRoot
-                : null;
+            const bottomLayer = this.frameEnabled ? this.frame.root : null;
+            const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
 
             const realNode = this.game.findNode(clickedNode.id)
                 || (bottomLayer && bottomLayer.findChild(clickedNode.id))
                 || (topLayer && topLayer.findChild(clickedNode.id));
 
-            if (realNode) {
+            if (realNode && realNode.node && realNode.node.handleClick) {
                 if (this.frameEnabled) {
-                    // Check if click is in the bezel area
                     if (click.x <= (this.bezelX / 2) || click.x >= (100 - this.bezelX / 2)
                         || click.y <= (this.bezelY / 2) || click.y >= (100 - this.bezelY / 2)) {
-                        realNode.node.handleClick && realNode.node.handleClick(playerId, click.x, click.y);
+                        realNode.node.handleClick(playerId, click.x, click.y);
                     } else {
                         const shiftedX = click.x - (this.bezelX / 2);
                         const shiftedY = click.y - (this.bezelY / 2);
                         const scaledX = shiftedX * (1 / ((100 - this.bezelX) / 100));
                         const scaledY = shiftedY * (1 / ((100 - this.bezelY) / 100));
-                        realNode.node.handleClick && realNode.node.handleClick(playerId, scaledX, scaledY);
+                        realNode.node.handleClick(playerId, scaledX, scaledY);
                     }
                 } else {
-                    realNode.node.handleClick && realNode.node.handleClick(playerId, click.x, click.y);
+                    realNode.node.handleClick(playerId, click.x, click.y);
                 }
             }
         }
@@ -475,36 +518,35 @@ class GameSession {
     _findClick(x, y, spectating, playerId) {
         let clicked = null;
 
-        // Bottom custom layer (frame)
         if (this.frameEnabled && this.frame.root) {
-            const scale = { x: 1, y: 1 };
-            clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.root.node, null, scale, false) || clicked;
+            clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.root.node, null, { x: 1, y: 1 }, false, 0) || clicked;
         }
 
-        // Game layers
-        for (const layerIndex in this.game.getLayers()) {
-            const layer = this.game.getLayers()[layerIndex];
+        const layers = this.game.getLayers();
+        for (let i = 0; i < layers.length; i++) {
+            const layer = layers[i];
             const scale = layer.scale || this.scale;
-            clicked = this._findClickHelper(x, y, spectating, playerId, layer.root.node, null, scale, true) || clicked;
+            clicked = this._findClickHelper(x, y, spectating, playerId, layer.root.node, null, scale, true, 0) || clicked;
         }
 
-        // Top custom layer (frame)
         if (this.frameEnabled && this.frame.topLayerRoot) {
-            const scale = { x: 1, y: 1 };
-            clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.topLayerRoot.node, null, scale, false) || clicked;
+            clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.topLayerRoot.node, null, { x: 1, y: 1 }, false, 0) || clicked;
         }
 
         return clicked;
     }
 
-    _findClickHelper(x, y, spectating, playerId, node, clicked, scale, inGame) {
-        if (node.playerIds && node.playerIds.length > 0 && !node.playerIds.find(p => p === playerId)) {
+    _findClickHelper(x, y, spectating, playerId, node, clicked, scale, inGame, depth) {
+        // Guard against deep/cyclic trees
+        if (depth > 100) return clicked;
+
+        if (node.playerIds && node.playerIds.length > 0 && !node.playerIds.find(p => p == playerId)) {
             return clicked;
         }
 
-        if (node.coordinates2d) {
+        if (node.coordinates2d && node.coordinates2d.length > 0) {
             const vertices = [];
-            for (const i in node.coordinates2d) {
+            for (let i = 0; i < node.coordinates2d.length; i++) {
                 const xOff = 100 - (scale.x * 100);
                 const yOff = 100 - (scale.y * 100);
                 const sx = node.coordinates2d[i][0] * ((100 - xOff) / 100) + (xOff / 2);
@@ -512,37 +554,43 @@ class GameSession {
                 vertices.push([sx, sy]);
             }
 
-            let isInside = false;
-            let minX = vertices[0][0], maxX = vertices[0][0];
-            let minY = vertices[0][1], maxY = vertices[0][1];
-            for (let i = 1; i < vertices.length; i++) {
-                minX = Math.min(vertices[i][0], minX);
-                maxX = Math.max(vertices[i][0], maxX);
-                minY = Math.min(vertices[i][1], minY);
-                maxY = Math.max(vertices[i][1], maxY);
-            }
+            if (vertices.length > 0) {
+                let isInside = false;
+                let minX = vertices[0][0], maxX = vertices[0][0];
+                let minY = vertices[0][1], maxY = vertices[0][1];
+                for (let i = 1; i < vertices.length; i++) {
+                    minX = Math.min(vertices[i][0], minX);
+                    maxX = Math.max(vertices[i][0], maxX);
+                    minY = Math.min(vertices[i][1], minY);
+                    maxY = Math.max(vertices[i][1], maxY);
+                }
 
-            if (!(x < minX || x > maxX || y < minY || y > maxY)) {
-                let ii = 0, jj = vertices.length - 1;
-                for (ii, jj; ii < vertices.length; jj = ii++) {
-                    if ((vertices[ii][1] > y) !== (vertices[jj][1] > y) &&
-                        x < (vertices[jj][0] - vertices[ii][0]) * (y - vertices[ii][1]) / (vertices[jj][1] - vertices[ii][1]) + vertices[ii][0]) {
-                        isInside = !isInside;
+                if (!(x < minX || x > maxX || y < minY || y > maxY)) {
+                    let ii = 0, jj = vertices.length - 1;
+                    for (ii, jj; ii < vertices.length; jj = ii++) {
+                        if ((vertices[ii][1] > y) !== (vertices[jj][1] > y) &&
+                            x < (vertices[jj][0] - vertices[ii][0]) * (y - vertices[ii][1]) / (vertices[jj][1] - vertices[ii][1]) + vertices[ii][0]) {
+                            isInside = !isInside;
+                        }
                     }
                 }
-            }
 
-            if (isInside) {
-                if (spectating && inGame) {
-                    // Spectators can't click in-game nodes (only frame/bezel nodes)
-                } else {
-                    clicked = node;
+                if (isInside) {
+                    if (!(spectating && inGame)) {
+                        clicked = node;
+                    }
                 }
             }
         }
 
-        for (const i in node.children) {
-            clicked = this._findClickHelper(x, y, spectating, playerId, node.children[i].node, clicked, scale, inGame);
+        if (node.children) {
+            const childKeys = Object.keys(node.children);
+            for (let i = 0; i < childKeys.length; i++) {
+                const child = node.children[childKeys[i]];
+                if (child && child.node) {
+                    clicked = this._findClickHelper(x, y, spectating, playerId, child.node, clicked, scale, inGame, depth + 1);
+                }
+            }
         }
 
         return clicked;
