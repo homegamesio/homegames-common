@@ -1,5 +1,5 @@
 const Docker = require('dockerode');
-const tar = require('tar-fs');
+const tar = require('tar');
 const path = require('path');
 const fs = require('fs');
 
@@ -51,7 +51,7 @@ const isImageBuilt = async (imageName = 'homegames-runner') => {
 const buildImage = async (dockerfilePath, imageName = 'homegames-runner') => {
     const dir = path.resolve(dockerfilePath);
 
-    const stream = await docker.buildImage(tar.pack(dir), { t: imageName });
+    const stream = await docker.buildImage(tar.c({ cwd: dir }, fs.readdirSync(dir)), { t: imageName });
 
     return new Promise((resolve, reject) => {
         docker.modem.followProgress(stream, (err, output) => {
