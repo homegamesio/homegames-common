@@ -32,6 +32,7 @@ const squishMap = {
     '130': 'squish-130',
     '135': 'squish-135',
     '136': 'squish-136',
+    '138': 'squish-138',
 };
 
 const DEFAULT_SQUISH_VERSION = '135';
@@ -43,12 +44,21 @@ const DEFAULT_SQUISH_VERSION = '135';
 const parseSquishVersion = (codePath) => {
     const code = fs.readFileSync(codePath, 'utf-8');
 
+    console.log('aiaiaiai');
     const { Parser } = require('acorn');
     const parsed = Parser.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
+    console.log('balls and ass');
+    console.log(parsed);
+    console.log(parsed.body);
+    console.log(parsed.body.map(n => n.type));
+    console.log(parsed.body.filter(n => n.type === 'ClassDeclaration').superClass);
 
     const foundGameClasses = parsed.body.filter(
-        n => n.type === 'ClassDeclaration' && n.superClass && n.superClass.name === 'Game'
+        n => n.type === 'ClassDeclaration' && n.superClass && (n.superClass.name === 'Game' || n.superClass.name === 'ViewableGame')
     );
+
+    console.log('found game classes');
+    console.log(foundGameClasses);
 
     if (foundGameClasses.length !== 1) {
         throw new Error('Unable to parse squish version');

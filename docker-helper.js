@@ -101,7 +101,7 @@ const runGameContainer = async ({
     saveDataPath,
     assetCachePath = null,
     imageName = 'homegames-runner',
-    memoryLimit = '256m',
+    memoryLimit = '64m',
     cpuLimit = '1',
     gameEntryRelative = null,
     noFrame = false,
@@ -148,7 +148,9 @@ const runGameContainer = async ({
     if (assetCachePath) {
         const resolved = path.resolve(assetCachePath);
         if (!fs.existsSync(resolved)) {
-            fs.mkdirSync(resolved, { recursive: true });
+            fs.mkdirSync(resolved, { recursive: true, mode: 0o777 });
+        } else {
+            fs.chmodSync(resolved, 0o777);
         }
         binds.push(`${resolved}:/root/.homegames/asset-cache:rw`);
     }

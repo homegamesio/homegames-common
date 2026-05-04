@@ -313,6 +313,7 @@ class GameSessionManager {
             try {
                 squishVersion = parseSquishVersion(gamePath);
             } catch (err) {
+                console.log(err);
                 squishVersion = DEFAULT_SQUISH_VERSION;
             }
         } else if (input.versionId) {
@@ -360,11 +361,11 @@ class GameSessionManager {
                     }
                 }
             }
-
+            
             const child = fork(this.childServerPath, [], {
                 env,
                 stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-                execArgv: ['--max-old-space-size=256'],
+                execArgv: ['--max-old-space-size=64'],
             });
 
             child.send(JSON.stringify({
