@@ -101,7 +101,7 @@ const runGameContainer = async ({
     saveDataPath,
     assetCachePath = null,
     imageName = 'homegames-runner',
-    memoryLimit = '64m',
+    memoryLimit = '128m',
     cpuLimit = '1',
     gameEntryRelative = null,
     noFrame = false,
