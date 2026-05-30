@@ -91,6 +91,7 @@ class GameSession {
         this.squisher.addListener(() => this._broadcastState());
 
         this.gameMetadata = (typeof game.constructor.metadata === 'function') ? game.constructor.metadata() : {};
+        this.maxPlayers = this.gameMetadata.maxPlayers || 64;
         this.aspectRatio = this.gameMetadata.aspectRatio || { x: 16, y: 9 };
 
         // Player / spectator maps  —  values are raw WebSocket objects
@@ -128,6 +129,12 @@ class GameSession {
     // -----------------------------------------------------------------------
 
     addPlayer(playerId, ws, playerOpts = {}) {
+        // Reject if the game is at capacity
+        if (Object.keys(this.players).length >= this.maxPlayers) {
+            try { ws.close(); } catch (e) {}
+            throw new Error('Game is full');
+        }
+
         // If this ID is already connected, disconnect the old one first
         if (this.players[playerId]) {
             this.removePlayer(playerId);

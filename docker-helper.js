@@ -180,7 +180,7 @@ const runGameContainer = async ({
             PidsLimit: 64,
             CapDrop: ['ALL'],
             Tmpfs: {
-                '/tmp': 'rw,size=64m',
+                '/tmp': 'rw,size=160m',
             },
             ExtraHosts: extraHosts,
         },
