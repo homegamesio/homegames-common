@@ -84,7 +84,7 @@ class GameSessionManager {
         this.dockerImageName = opts.dockerImageName || 'homegames-runner';
         this.childServerPath = opts.childServerPath || null;
         this.gracePeriodMs = opts.gracePeriodMs || 30000;
-        this.lifecycleCheckMs = opts.lifecycleCheckMs || 10000;
+        this.lifecycleCheckMs = opts.lifecycleCheckMs || 3000;
         this.forgejo = opts.forgejo || {};
         this.saveDataRoot = opts.saveDataRoot || path.join(os.tmpdir(), 'hg-save-data');
         this.assetCachePath = opts.assetCachePath || null;
@@ -368,6 +368,8 @@ class GameSessionManager {
                 execArgv: ['--max-old-space-size=64'],
             });
 
+            this._attachForkLogForwarding(child);
+
             child.send(JSON.stringify({
                 key: input.gameKey || path.basename(gamePath, '.js'),
                 squishVersion,
@@ -431,6 +433,38 @@ class GameSessionManager {
                 }
             });
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // Forward forked child stdout/stderr to the parent terminal.
+    // Docker sessions are excluded — use GET /sessions/:id/logs or docker logs.
+    // -----------------------------------------------------------------------
+    _attachForkLogForwarding(child) {
+        const emitLine = (line) => {
+            if (!line) return;
+            console.log(`session log: ${line}`);
+        };
+
+        const attachStream = (stream) => {
+            if (!stream) return;
+            let buffer = '';
+            stream.on('data', (chunk) => {
+                buffer += chunk.toString();
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const line of lines) {
+                    emitLine(line);
+                }
+            });
+            stream.on('end', () => {
+                if (buffer.length > 0) {
+                    emitLine(buffer);
+                }
+            });
+        };
+
+        attachStream(child.stdout);
+        attachStream(child.stderr);
     }
 
     // -----------------------------------------------------------------------
@@ -525,10 +559,30 @@ class GameSessionManager {
 
             if (s.type === 'docker') {
                 const running = await isContainerRunning(s.containerId);
-                this.log.info(`Session ${sessionId} lifecycle check: container running = ${running}`);
                 if (!running) {
                     this.log.info(`Session ${sessionId} container exited`);
                     this._cleanupSession(sessionId);
+                    return;
+                }
+
+                // Check player count — stop container if empty past grace period
+                try {
+                    const healthData = await this._querySessionHealth(s.port);
+                    const playerCount = healthData && healthData.playerCount !== undefined ? healthData.playerCount : -1;
+                    if (playerCount === 0) {
+                        s._emptyTicks++;
+                        const emptyMs = s._emptyTicks * this.lifecycleCheckMs;
+                        if (emptyMs >= this.gracePeriodMs) {
+                            this.log.info(`Session ${sessionId} empty for ${emptyMs}ms, stopping`);
+                            await stopContainer(s.containerId);
+                            this._cleanupSession(sessionId);
+                            return;
+                        }
+                    } else if (playerCount > 0) {
+                        s._emptyTicks = 0;
+                    }
+                } catch (e) {
+                    // Health check failed — container might be starting up, ignore
                 }
             } else if (s.type === 'fork') {
                 // For fork sessions, send heartbeat. The child_game_server.js
@@ -557,6 +611,28 @@ class GameSessionManager {
         }
 
         this._cleanupSession(sessionId);
+    }
+
+    _querySessionHealth(port) {
+        return new Promise((resolve) => {
+            const req = http.request({
+                hostname: 'localhost',
+                port,
+                path: '/health',
+                method: 'GET',
+                timeout: 2000,
+            }, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    try { resolve(JSON.parse(data)); }
+                    catch (e) { resolve(null); }
+                });
+            });
+            req.on('error', () => resolve(null));
+            req.on('timeout', () => { req.destroy(); resolve(null); });
+            req.end();
+        });
     }
 
     _cleanupSession(sessionId) {
