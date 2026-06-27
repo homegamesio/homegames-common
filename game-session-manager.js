@@ -18,7 +18,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { isDockerAvailable, isImageBuilt, ensureImage, runGameContainer, stopContainer, isContainerRunning } = require('./docker-helper');
+const { isDockerAvailable, isImageBuilt, ensureImage, runGameContainer, stopContainer, isContainerRunning, parseMemoryString } = require('./docker-helper');
 const { squishMap, DEFAULT_SQUISH_VERSION, fetchGameFromForgejo, loadGameClassFromPath, detectSquishVersion, parseSquishVersion } = require('./game-loader');
 
 // ---------------------------------------------------------------------------
@@ -74,6 +74,7 @@ class GameSessionManager {
      * @param {function} [opts.log] — logging function ({ info, error })
      * @param {number} [opts.bezelX] — bezel size X for init message (default 0)
      * @param {number} [opts.bezelY] — bezel size Y for init message (default 0)
+     * @param {string} [opts.memoryLimit] — Docker-style memory limit for child sessions (e.g. '128m'); overrides CHILD_SESSION_MEMORY_LIMIT config
      */
     constructor(opts = {}) {
         this.portPool = new PortPool(
@@ -92,6 +93,16 @@ class GameSessionManager {
         this.username = opts.username || null;
         this.certPath = opts.certPath || null;
         this.log = opts.log || { info: console.log, error: console.error };
+
+        // Memory limit for child game sessions. A single Docker-style string
+        // (e.g. '128m', '1g') configurable via config.json / env (getConfigValue),
+        // with an opts override. Docker consumes it directly; the fork path
+        // converts it to integer megabytes for V8's --max-old-space-size.
+        // require lazily: index.js requires this module, so it isn't fully
+        // populated at module-load time, but the constructor runs at runtime.
+        const { getConfigValue } = require('./index');
+        this.memoryLimit = opts.memoryLimit
+            || getConfigValue('CHILD_SESSION_MEMORY_LIMIT', '128m');
 
         this.sessions = {};
         this._dockerChecked = false;
@@ -250,6 +261,7 @@ class GameSessionManager {
             imageName: this.dockerImageName,
             gameEntryRelative,
             noFrame: input.noFrame || false,
+            memoryLimit: this.memoryLimit,
             extraEnv,
         });
 
@@ -351,7 +363,17 @@ class GameSessionManager {
                 }
             }
             // Apply required overrides (these take precedence)
-            env.NODE_PATH = `${process.cwd()}${path.sep}node_modules`;
+            // Resolve the game's `require('squish-NNN')` against the core
+            // install's node_modules (where the squish packages actually live),
+            // NOT process.cwd() — the core process is forked by Electron with an
+            // inherited cwd that has no node_modules, so a cwd-relative NODE_PATH
+            // would (intermittently) fail to find the requested squish version.
+            // childServerPath is <core>/src/child_game_server.js, so its
+            // grandparent dir is the core install root.
+            const coreModulesPath = this.childServerPath
+                ? path.join(path.dirname(path.dirname(this.childServerPath)), 'node_modules')
+                : `${process.cwd()}${path.sep}node_modules`;
+            env.NODE_PATH = coreModulesPath;
             env.SQUISH_PATH = squishPkg;
             // opts.env is filtered through the same allowlist — no arbitrary injection
             if (opts.env) {
@@ -362,10 +384,13 @@ class GameSessionManager {
                 }
             }
             
+            // V8's --max-old-space-size is in megabytes; convert the Docker-style
+            // memory limit string (bytes) to MB.
+            const maxOldSpaceMb = Math.max(1, Math.floor(parseMemoryString(this.memoryLimit) / (1024 * 1024)));
             const child = fork(this.childServerPath, [], {
                 env,
                 stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-                execArgv: ['--max-old-space-size=64'],
+                execArgv: [`--max-old-space-size=${maxOldSpaceMb}`],
             });
 
             this._attachForkLogForwarding(child);

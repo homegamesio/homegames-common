@@ -33,7 +33,8 @@ const DEFAULT_CONFIG = {
     "API_URL": "https://api.homegames.io",
     "LINK_PROXY_URL": "wss://public.homegames.link:81",
     "LINK_URL": "wss://homegames.link",
-    "MAP_ENABLED": true
+    "MAP_ENABLED": true,
+    "CHILD_SESSION_MEMORY_LIMIT": "128m"
 };
 
 // ---------------------------------------------------------------------------
@@ -192,6 +193,11 @@ const dockerHelper = require('./docker-helper');
 const GameSession = require('./game-session');
 const GameSessionManager = require('./game-session-manager');
 
+const getHash = (input) => {
+    return crypto.createHash('md5').update(input).digest('hex');
+};
+
+
 // ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
@@ -203,6 +209,7 @@ module.exports = {
     getConfigValue,
     log,
     getAppDataPath,
+    getHash,
 
     // Game loading
     gameLoader,

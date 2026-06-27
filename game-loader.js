@@ -33,6 +33,8 @@ const squishMap = {
     '135': 'squish-135',
     '136': 'squish-136',
     '138': 'squish-138',
+    // 1.3.9 — adds per-tick coalescing of squish/broadcast + Squisher.flush()
+    '139': 'squish-139',
 };
 
 const DEFAULT_SQUISH_VERSION = '135';

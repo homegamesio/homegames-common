@@ -395,4 +395,5 @@ module.exports = {
     stopContainer,
     isContainerRunning,
     streamContainerLogs,
+    parseMemoryString,
 };

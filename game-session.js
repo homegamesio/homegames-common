@@ -88,7 +88,15 @@ class GameSession {
         }
 
         this.squisher = new Squisher(squisherOpts);
-        this.squisher.addListener(() => this._broadcastState());
+        // Coalesce broadcasts: a single game tick often mutates many nodes, each
+        // firing onStateChange -> a listener call. Without coalescing that's one
+        // full per-player send (frame.flat + Buffer.from + ws.send) per mutation.
+        // We defer to the end of the current event-loop turn so a burst of
+        // mutations produces a single broadcast carrying the final state.
+        // (The squisher still recomputes this.state synchronously per mutation,
+        // so getPlayerFrame/state stay fresh for the direct-send paths.)
+        this._broadcastScheduled = false;
+        this.squisher.addListener(() => this._scheduleBroadcast());
 
         this.gameMetadata = (typeof game.constructor.metadata === 'function') ? game.constructor.metadata() : {};
         this.maxPlayers = this.gameMetadata.maxPlayers || 64;
@@ -448,6 +456,18 @@ class GameSession {
     // Private: broadcasting
     // -----------------------------------------------------------------------
 
+    _scheduleBroadcast() {
+        if (this._broadcastScheduled) return;
+        this._broadcastScheduled = true;
+        const schedule = (typeof setImmediate === 'function')
+            ? setImmediate
+            : (fn) => setTimeout(fn, 0);
+        schedule(() => {
+            this._broadcastScheduled = false;
+            this._broadcastState();
+        });
+    }
+
     _broadcastState() {
         for (const pid in this.players) {
             try {
@@ -466,6 +486,11 @@ class GameSession {
     }
 
     _sendPlayerFrame(playerId, ws) {
+        // Newer squishers defer squish/broadcast and coalesce per tick. The
+        // direct-send paths (a player/spectator just joined) need the current
+        // state, so flush any pending changes first. No-op when nothing pending
+        // and on older squishers that don't implement flush().
+        if (typeof this.squisher.flush === 'function') this.squisher.flush();
         let frame = this.squisher.getPlayerFrame(playerId);
         if (!frame) frame = this.squisher.state;
         if (frame) {
