@@ -202,6 +202,12 @@ const getHash = (input) => {
 // Exports
 // ---------------------------------------------------------------------------
 
+// Canonical squish.js authoring guide — the single source of truth for every
+// consumer (the LLM worker, the studio "copy LLM context" feature, repo docs).
+// Read the text with getAuthoringDoc(), or hand a child process authoringDocPath.
+const AUTHORING_DOC_PATH = path.join(__dirname, 'docs', 'squishjs-game-authoring.md');
+const getAuthoringDoc = () => fs.readFileSync(AUTHORING_DOC_PATH, 'utf-8');
+
 module.exports = {
     // Utilities
     guaranteeDir,
@@ -210,6 +216,10 @@ module.exports = {
     log,
     getAppDataPath,
     getHash,
+
+    // Authoring guide (single source of truth)
+    authoringDocPath: AUTHORING_DOC_PATH,
+    getAuthoringDoc,
 
     // Game loading
     gameLoader,
