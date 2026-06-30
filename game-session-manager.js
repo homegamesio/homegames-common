@@ -102,7 +102,7 @@ class GameSessionManager {
         // populated at module-load time, but the constructor runs at runtime.
         const { getConfigValue } = require('./index');
         this.memoryLimit = opts.memoryLimit
-            || getConfigValue('CHILD_SESSION_MEMORY_LIMIT', '128m');
+            || getConfigValue('CHILD_SESSION_MEMORY_LIMIT', '196m');
 
         this.sessions = {};
         this._dockerChecked = false;

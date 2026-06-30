@@ -34,7 +34,7 @@ const DEFAULT_CONFIG = {
     "LINK_PROXY_URL": "wss://public.homegames.link:81",
     "LINK_URL": "wss://homegames.link",
     "MAP_ENABLED": true,
-    "CHILD_SESSION_MEMORY_LIMIT": "128m"
+    "CHILD_SESSION_MEMORY_LIMIT": "196m"
 };
 
 // ---------------------------------------------------------------------------
