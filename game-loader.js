@@ -9,35 +9,10 @@ const os = require('os');
 // SINGLE SOURCE OF TRUTH — all repos should import from here.
 // ---------------------------------------------------------------------------
 const squishMap = {
-    '061': 'squish-061',
-    '063': 'squish-063',
-    '0631': 'squish-0631',
-    '0632': 'squish-0632',
-    '0633': 'squish-0633',
-    '0756': 'squish-0756',
-    '0762': 'squish-0762',
-    '0765': 'squish-0765',
-    '0766': 'squish-0766',
-    '0767': 'squish-0767',
-    '1000': 'squish-1000',
-    '1004': 'squish-1004',
-    '1005': 'squish-1005',
-    '1006': 'squish-1006',
-    '1007': 'squish-1007',
-    '1008': 'squish-1008',
-    '1009': 'squish-1009',
-    '1010': 'squish-1010',
-    '110': 'squish-110',
-    '120': 'squish-120',
-    '130': 'squish-130',
-    '135': 'squish-135',
-    '136': 'squish-136',
-    '138': 'squish-138',
-    // 1.3.9 — adds per-tick coalescing of squish/broadcast + Squisher.flush()
-    '139': 'squish-139',
+    '142': 'squish-142',
 };
 
-const DEFAULT_SQUISH_VERSION = '135';
+const DEFAULT_SQUISH_VERSION = '142';
 
 // ---------------------------------------------------------------------------
 // Parse squish version from source file using AST (reliable, needs acorn)

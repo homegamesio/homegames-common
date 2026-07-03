@@ -92,6 +92,8 @@ class GameSessionManager {
         this.maxSessions = opts.maxSessions || 50;
         this.username = opts.username || null;
         this.certPath = opts.certPath || null;
+        // Port Homenames listens on, so Docker sessions can reach it on the host.
+        this.homenamesPort = opts.homenamesPort || null;
         this.log = opts.log || { info: console.log, error: console.error };
 
         // Memory limit for child game sessions. A single Docker-style string
@@ -251,6 +253,13 @@ class GameSessionManager {
         // which is set in docker-helper.js. HTTPS_ENABLED controls whether
         // HomenamesHelper uses https — must be false for local dev.
         extraEnv.HTTPS_ENABLED = 'false';
+        // The runner image bakes no config.json, so without this the container
+        // falls back to DEFAULT_CONFIG's HOMENAMES_PORT — which only happens to
+        // match the host in local dev. Pass the host's real port so player-name
+        // lookups (HomenamesHelper) hit the right port on hosted instances.
+        const homenamesPort = this.homenamesPort
+            || require('./index').getConfigValue('HOMENAMES_PORT', 7100);
+        extraEnv.HOMENAMES_PORT = String(homenamesPort);
 
         const { containerId } = await runGameContainer({
             codePath,
