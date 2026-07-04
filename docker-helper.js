@@ -136,6 +136,19 @@ const runGameContainer = async ({
     }
     env.push('DOCKER_HOST_HOSTNAME=host.docker.internal');
 
+    // Run the container as the host process's uid/gid so mounted files carry
+    // the same access the fork path has. CapDrop ALL below removes
+    // CAP_DAC_OVERRIDE, so container root cannot read files the host user
+    // owns with restrictive modes (e.g. a 600 TLS key) — running as the host
+    // user can. No getuid on Windows; Docker Desktop maps ownership there.
+    const hostUser = typeof process.getuid === 'function'
+        ? `${process.getuid()}:${process.getgid()}`
+        : null;
+    // Non-root has no writable /root; point HOME at the tmpfs instead so
+    // getAppDataPath()-style writes (~/.homegames) still work.
+    const containerHome = hostUser ? '/tmp' : '/root';
+    env.push(`HOME=${containerHome}`);
+
     const binds = [
         `${path.resolve(codePath)}:/app/game:ro`,
     ];
@@ -164,7 +177,7 @@ const runGameContainer = async ({
         } else {
             fs.chmodSync(resolved, 0o777);
         }
-        binds.push(`${resolved}:/root/.homegames/asset-cache:rw`);
+        binds.push(`${resolved}:${containerHome}/.homegames/asset-cache:rw`);
     }
 
     // Parse memory limit to bytes if it's a human string (e.g. '256m')
@@ -173,6 +186,7 @@ const runGameContainer = async ({
     const container = await docker.createContainer({
         Image: imageName,
         Cmd: ['container-entry.js'],
+        ...(hostUser ? { User: hostUser } : {}),
         Env: env,
         Labels: {
             'homegames-session': 'true',
