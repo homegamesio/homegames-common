@@ -250,9 +250,11 @@ class GameSessionManager {
         const extraEnv = {};
         extraEnv.API_URL = 'https://api.homegames.io';
         // Homenames runs on the host — container reaches it via DOCKER_HOST_HOSTNAME
-        // which is set in docker-helper.js. HTTPS_ENABLED controls whether
-        // HomenamesHelper uses https — must be false for local dev.
-        extraEnv.HTTPS_ENABLED = 'false';
+        // which is set in docker-helper.js. HTTPS_ENABLED must mirror the host:
+        // when the host has certs, the session serves wss AND Homenames on the
+        // host is https, so container->host calls must use https too. When the
+        // host is plain http (local dev), it must be false.
+        extraEnv.HTTPS_ENABLED = this.certPath ? 'true' : 'false';
         // The runner image bakes no config.json, so without this the container
         // falls back to DEFAULT_CONFIG's HOMENAMES_PORT — which only happens to
         // match the host in local dev. Pass the host's real port so player-name
@@ -266,6 +268,7 @@ class GameSessionManager {
             port,
             squishVersion,
             saveDataPath,
+            certPath: this.certPath,
             assetCachePath: this.assetCachePath,
             imageName: this.dockerImageName,
             gameEntryRelative,
@@ -563,7 +566,12 @@ class GameSessionManager {
                     return reject(new Error(`WebSocket on port ${port} not ready after ${timeoutMs}ms`));
                 }
 
-                const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+                // Sessions with certs serve wss. The cert is issued for the
+                // public domain, not 127.0.0.1, so skip verification — this
+                // is loopback traffic to our own container.
+                const ws = this.certPath
+                    ? new WebSocket(`wss://127.0.0.1:${port}`, { rejectUnauthorized: false })
+                    : new WebSocket(`ws://127.0.0.1:${port}`);
                 ws.once('open', () => {
                     ws.close();
                     resolve();
@@ -649,12 +657,16 @@ class GameSessionManager {
 
     _querySessionHealth(port) {
         return new Promise((resolve) => {
-            const req = http.request({
+            // Sessions with certs serve https; cert won't match localhost, so
+            // skip verification for this loopback check.
+            const mod = this.certPath ? require('https') : http;
+            const req = mod.request({
                 hostname: 'localhost',
                 port,
                 path: '/health',
                 method: 'GET',
                 timeout: 2000,
+                rejectUnauthorized: false,
             }, (res) => {
                 let data = '';
                 res.on('data', (chunk) => { data += chunk; });
@@ -748,7 +760,9 @@ class GameSessionManager {
             if (session.type === 'docker') {
                 // Docker sessions: use HTTP API on the session's port
                 const apiPath = apiName === 'getPlayers' ? '/api/players' : `/api/${apiName}`;
-                const req = http.get(`http://localhost:${session.port}${apiPath}`, (res) => {
+                const mod = this.certPath ? require('https') : http;
+                const protocol = this.certPath ? 'https' : 'http';
+                const req = mod.get(`${protocol}://localhost:${session.port}${apiPath}`, { rejectUnauthorized: false }, (res) => {
                     let buf = '';
                     res.on('data', (chunk) => { buf += chunk; });
                     res.on('end', () => {

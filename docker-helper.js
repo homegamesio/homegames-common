@@ -87,6 +87,9 @@ const ensureImage = async (dockerfilePath, imageName = 'homegames-runner') => {
 //   port             — host port to map (also used as container port)
 //   squishVersion    — squish version string
 //   saveDataPath     — absolute path to host directory for game save data (optional)
+//   certPath         — absolute path to host directory containing homegames.key
+//                      and homegames.cert; mounted read-only so the session
+//                      serves wss/https (optional)
 //   imageName        — Docker image name (default: 'homegames-runner')
 //   memoryLimit      — memory limit in bytes or string (default: '256m')
 //   cpuLimit         — CPU limit as a string (default: '1')
@@ -99,6 +102,7 @@ const runGameContainer = async ({
     port,
     squishVersion,
     saveDataPath,
+    certPath = null,
     assetCachePath = null,
     imageName = 'homegames-runner',
     memoryLimit = '196m',
@@ -142,6 +146,14 @@ const runGameContainer = async ({
             fs.mkdirSync(resolved, { recursive: true });
         }
         binds.push(`${resolved}:/app/save:rw`);
+    }
+
+    // Mount host TLS certs read-only. child_game_server.js reads CERT_PATH
+    // and expects homegames.key / homegames.cert inside it (same layout as
+    // the host's hg-certs directory).
+    if (certPath) {
+        binds.push(`${path.resolve(certPath)}:/certs:ro`);
+        env.push('CERT_PATH=/certs');
     }
 
     // Mount the host's asset cache so containers share downloaded assets
