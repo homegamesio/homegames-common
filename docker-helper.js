@@ -159,6 +159,9 @@ const runGameContainer = async ({
             fs.mkdirSync(resolved, { recursive: true });
         }
         binds.push(`${resolved}:/app/save:rw`);
+        // Tell child_game_server.js to write saves here instead of under
+        // HOME — HOME is a tmpfs, so those writes wouldn't persist.
+        env.push('SAVE_DATA_PATH=/app/save');
     }
 
     // Mount host TLS certs read-only. child_game_server.js reads CERT_PATH
@@ -207,6 +210,13 @@ const runGameContainer = async ({
             CapDrop: ['ALL'],
             Tmpfs: {
                 '/tmp': 'rw,size=160m',
+                // The asset-cache bind below sits at ~/.homegames/asset-cache,
+                // and the daemon creates missing mountpoint parents as
+                // root:0755 — which the non-root container user (CapDrop ALL,
+                // no DAC_OVERRIDE) can't write into. Mount ~/.homegames as its
+                // own world-writable tmpfs so HOME-relative writes still work;
+                // it mounts before the deeper asset-cache bind.
+                [`${containerHome}/.homegames`]: 'rw,size=32m,mode=1777',
             },
             ExtraHosts: extraHosts,
         },

@@ -208,12 +208,18 @@ class GameSessionManager {
                 try { fs.rmSync(codePath, { recursive: true, force: true }); } catch (e) {}
             };
         } else if (input.gamePath) {
-            // Local file path — mount a broad enough ancestor so that
-            // relative requires (e.g. ../../common/util) resolve correctly.
-            // We walk up from the game file to find the project root
-            // (directory containing node_modules or package.json).
+            // Games are self-contained — they cannot have their own
+            // dependencies — so mount only the game's own directory.
+            // The one exception is built-in core games, which use shared
+            // modules via relative requires (../../common/*): for those,
+            // mount the core src tree. Never mount anything broader.
             const resolved = path.resolve(input.gamePath);
-            codePath = this._findProjectRoot(resolved) || path.dirname(resolved);
+            const coreSrcRoot = this.childServerPath ? path.dirname(this.childServerPath) : null;
+            if (coreSrcRoot && resolved.startsWith(coreSrcRoot + path.sep)) {
+                codePath = coreSrcRoot;
+            } else {
+                codePath = path.dirname(resolved);
+            }
             // Tell the container where the entry point is relative to the mount
             gameEntryRelative = path.relative(codePath, resolved);
             // Parse squish version from source via AST (no require) — safe for
@@ -502,23 +508,6 @@ class GameSessionManager {
 
         attachStream(child.stdout);
         attachStream(child.stderr);
-    }
-
-    // -----------------------------------------------------------------------
-    // Find the project root (nearest ancestor with node_modules or package.json)
-    // so we mount enough of the tree for relative requires to work.
-    // -----------------------------------------------------------------------
-    _findProjectRoot(filePath) {
-        let dir = path.dirname(filePath);
-        const root = path.parse(dir).root;
-
-        while (dir !== root) {
-            if (fs.existsSync(path.join(dir, 'node_modules')) || fs.existsSync(path.join(dir, 'package.json'))) {
-                return dir;
-            }
-            dir = path.dirname(dir);
-        }
-        return null;
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # SquishJS Game Authoring — Technical Reference for Code Generation
 
-> Context document for an LLM that writes Homegames games. Everything here is verified against `squishjs@1.3.8` (the `squish-138` alias) and real published games. If you generate a game, follow this contract exactly. Code that violates the **Hard Constraints** section will be auto-rejected by the publishing pipeline before a human ever sees it.
+> Context document for an LLM that writes Homegames games. Everything here is verified against `squishjs@1.4.2` (the `squish-142` alias), the server's real click/frame pipeline, and the shipped first-party catalog games. If you generate a game, follow this contract exactly. Code that violates the **Hard Constraints** section will be auto-rejected by the publishing pipeline before a human ever sees it.
 
 ---
 
@@ -23,14 +23,14 @@ Key mental model:
 The publish pipeline runs an AST scan, then loads and runs your game in a Docker sandbox for ~5 seconds. To pass:
 
 1. **Entry point is `index.js`** and it must `module.exports = YourGameClass;` (a class, not an instance).
-2. **`require` only the SquishJS package and your own local files.** Use `require('squish-138')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, etc.). Do not make network requests, touch the filesystem, spawn processes, or read `process.env`.
+2. **`require` only the SquishJS package and your own local files.** Use `require('squish-142')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, etc.). Do not make network requests, touch the filesystem, spawn processes, or read `process.env`.
 3. **No dynamic code execution:** no `eval`, no `new Function(...)`, no `require(variable)`.
-4. **`static metadata()` is required** and must return an object whose `squishVersion` matches the package you imported (`'138'` for `squish-138`).
+4. **`static metadata()` is required** and must return an object whose `squishVersion` matches the package you imported (`'142'` for `squish-142`).
 5. **It must not throw** during `require`, construction, or the first few seconds of ticking. A crash = rejected.
 6. **Size limits:** total game ≤ 20 MB, any single file ≤ 5 MB. Keep assets external (referenced by id), not inlined.
 7. **License:** published games are GPLv3. A `LICENSE` file is required at publish time (not your concern when generating the game code itself, but don't add a conflicting license header).
 
-Default to **`squish-138` / `squishVersion: '138'`** for all new games. (Older games pin other versions like `1006`, `0767`, `136`; the version in the `require` and in `metadata()` must always match.) One exception: if the game needs **image cropping / spritesheets**, target **`squish-140`** instead (§7.3.1) — that feature does not exist on `138`.
+Default to **`squish-142` / `squishVersion: '142'`** for all new games. (Older games pin other versions like `1006`, `0767`, `136`, `138`; the version in the `require` and in `metadata()` must always match.) `142` includes image cropping / spritesheets (§7.3.1) and shadow/glow effects (§7.4).
 
 ---
 
@@ -39,12 +39,12 @@ Default to **`squish-138` / `squishVersion: '138'`** for all new games. (Older g
 Extend `Game` and implement these. Only `metadata()`, the constructor, and `getLayers()` are mandatory; the rest are optional hooks the server calls when present.
 
 ```js
-const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-138');
+const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-142');
 const { COLORS } = Colors;
 
 class MyGame extends Game {
     // REQUIRED. Static. Describes the game. squishVersion must match the require above.
-    static metadata() { return { squishVersion: '138', name: 'My Game' /* ... */ }; }
+    static metadata() { return { squishVersion: '142', name: 'My Game' /* ... */ }; }
 
     // REQUIRED. Build your initial scene graph. ALWAYS call super() first.
     constructor() {
@@ -132,7 +132,7 @@ this.base.node.onStateChange();
 ```js
 static metadata() {
     return {
-        squishVersion: '138',          // REQUIRED. Must match require('squish-138').
+        squishVersion: '142',          // REQUIRED. Must match require('squish-142').
         name: 'Hot Potato',            // Display name.
         author: 'Your Name',           // Creator.
         description: 'One-line pitch shown in the catalog.',
@@ -147,8 +147,9 @@ static metadata() {
 ```
 
 - The plane is always `0–100`; `aspectRatio` only controls how that square is presented (letterboxing on the client). Build your layout in `0–100` space and pick an aspect ratio that suits it.
-- **Aspect-ratio distortion gotcha:** because the `0–100` square is stretched to fill the aspect rectangle, an x-unit and a y-unit are **not** the same size on screen unless the ratio is `{1,1}`. At `{16,9}` everything is wider than tall — a "square" looks like a rectangle, a `polyCircle` looks like an ellipse, and a 45° heading doesn't look like 45°. For UI/party games this is fine. For **rotation- or distance-based geometry** (twin-stick shooters, anything with circles, orbits, or true angles), prefer **`aspectRatio: { x: 1, y: 1 }`** so the math matches the pixels, or compensate for the ratio in your trig.
-- `tickRate` is frames per second. `60` for action games, `10–30` for casual, omit entirely for purely event-driven games (click/turn-based) that update only in handlers.
+- **Aspect-ratio distortion gotcha:** because the `0–100` square is stretched to fill the aspect rectangle, an x-unit and a y-unit are **not** the same size on screen unless the ratio is `{1,1}`. At `{16,9}` everything is wider than tall — a "square" looks like a rectangle, a `polyCircle` looks like an ellipse, and a 45° heading doesn't look like 45°. For UI/party games this is fine. For **rotation- or distance-based geometry** (twin-stick shooters, anything with circles, orbits, or true angles), prefer **`aspectRatio: { x: 1, y: 1 }`** so the math matches the pixels, or compensate for the ratio in your trig. To draw a **physically square** rect at ratio `{x, y}`, use `height = width * (x / y)` (e.g. at `{16,9}` a `2 × 3.56` rect renders square; at `{9,16}` use `2 × 1.13`).
+- **Text size is relative to canvas WIDTH only.** A `size: s` line of text is `s%` of the canvas width tall in pixels — which is `s * (aspectX / aspectY)` **y-units** tall on the plane. At `{1,1}` a size-2 text is ~2 y-units tall; at `{16,9}` it's ~3.6; at `{9,16}` it's ~1.1. Use this to vertically center a label in a box: `textY = boxY + (boxH - size * aspectX / aspectY) / 2`. **Text width is NOT knowable server-side**: each client's canvas resolves `monospace` to its own font, with advance widths anywhere from ~0.6 to ~0.85 of the font size. Budget wide (~`0.85 * size` x-units per character) when sizing boxes/wrapping so wide fonts don't overflow, and never position anything by summing character widths — to place a cursor or caret, embed it in the string itself (a `'▌'` glyph appended to the text lands exactly after the last character on every client; see the Typewriter game).
+- `tickRate` is frames per second for `tick()`. **Every tick with a state change re-squishes and re-broadcasts the whole tree**, so high rates cost real bandwidth. In practice: **15–30 for action games** (shipped catalog games use 15–20 and feel snappy), **8–15 for casual/UI-driven games**, omit entirely for purely event-driven games (click/turn-based) that update only in handlers. Express all in-game durations as `seconds * TICK_RATE` so pacing tweaks don't silently change timers.
 
 ---
 
@@ -176,6 +177,8 @@ const h = node.node.coordinates2d[2][1] - y;
 ```
 
 > **Precision gotcha:** coordinates are serialized as an integer + a 2-decimal fraction, so the on-screen resolution is **~0.01 units** in `0–100` space. Movement smaller than that per frame rounds away — a `tick()` that adds `0.005` to a position will visually stutter or not move at all. Keep per-frame deltas ≥ ~0.05, or accumulate sub-unit motion in a plain variable and only write the rounded value into `coordinates2d`.
+
+> **Vertex-count cap:** a node's `coordinates2d` is serialized into a length-limited wire frame — **at most ~126 vertices per node**. Beyond that the frame overflows and the node breaks. For detailed silhouettes (terrain skylines, rings, long strips) budget vertices: e.g. a destructible terrain polygon works at 96 columns (~100 vertices), and a "thick outline" strip that traces a path top-and-bottom doubles its vertex count — sample every other point to stay under the cap. Split very detailed geometry across multiple nodes.
 
 **Colors** are `[r, g, b, a]` arrays, each `0–255`. `a` (alpha) of `0` is fully transparent, `255` fully opaque.
 
@@ -208,7 +211,8 @@ const box = new GameNode.Shape({
     color: [0, 0, 0, 255],                          // STROKE color — required if you set border
     border: 6,                                       // optional outline WIDTH (a number, see below)
     onClick: (playerId, x, y) => { /* ... */ },     // optional; makes it interactive
-    playerIds: [0]                                   // [0] = everyone (default). See §8.
+    effects: { shadow: { color: [0,255,255,255], blur: 12 } },  // optional neon glow (§7.4)
+    playerIds: [42]                                  // omit entirely for visible-to-everyone. See §8.
 });
 ```
 
@@ -236,7 +240,7 @@ const facing = (x, y, angle, size) => ShapeUtils.triangle(
 );
 ```
 
-- Transparent fill `[0,0,0,0]` + an `onClick` makes an invisible hit-box / button overlay. It's also the clean way to **temporarily hide a node without removing it** (e.g. a dead/respawning entity): set `fill` to `[0,0,0,0]` and restore it later. Don't try to hide via `playerIds: []` — `[0]` means everyone and an empty array is not a reliable "hide from all".
+- Transparent fill `[0,0,0,0]` + an `onClick` makes an invisible hit-box / button overlay (but see §9's hit-test rules — an invisible node still swallows clicks for things drawn beneath it). To **temporarily hide a node without removing it**, either set `fill` to `[0,0,0,0]` or set `playerIds = [0]` (visible to nobody — see §8); restore later.
 - A `Shape` can also carry an `input` field (to act as an on-screen text box) and `onHover`/`offHover` callbacks — see §9.
 
 ### 7.2 `GameNode.Text`
@@ -367,27 +371,91 @@ this.sprite.node.asset = { 'sheet': { pos, size, ...frameCrop(this.frame, this.f
 this.base.node.onStateChange();
 ```
 
-> **Version gate:** cropping requires **`squish-140` or newer** (`require('squish-140')` + `squishVersion: '140'`). On `138`/`139` the crop fields are silently ignored — the image renders whole, no error — so a game must be on `140`+ for cropping to take effect.
+> **Version gate:** cropping requires **`squish-140` or newer** — included in the default `142`. On `138`/`139` the crop fields are silently ignored (the image renders whole, no error).
+
+### 7.4 Effects (glow) and transparency — the rules that actually work
+
+**Glow / shadow.** `Shape` and `Asset` nodes accept an `effects` field; the only supported effect is a drop shadow, which doubles as a **neon glow** — the signature look of the first-party catalog:
+
+```js
+const glow = (color, blur) => ({ shadow: { color: [color[0], color[1], color[2], 255], blur } });
+
+new GameNode.Shape({
+    shapeType: Shapes.POLYGON,
+    coordinates2d: ShapeUtils.rectangle(40, 40, 20, 20),
+    fill: [0, 255, 255, 255],
+    effects: glow([0, 255, 255, 255], 14)   // cyan glow, blur 14
+});
+```
+
+- `blur` is a number (canvas `shadowBlur` pixels); `6–12` is a subtle glow, `16–30` dramatic, `40` an explosion flash.
+- To remove an effect, set `node.node.effects = null` (never `{}` — an empty object crashes serialization).
+- **`Text` nodes do NOT accept `effects`.** To give a title/banner a glow, fake it with **4 dim offset copies under a bright core** — the standard pattern:
+
+```js
+makeGlowText(text, x, y, size, color, glowColor, playerIds) {
+    const gc = glowColor || color;
+    const offsets = [[-0.25, 0], [0.25, 0], [0, -0.25], [0, 0.25]];
+    const nodes = offsets.map(o => new GameNode.Text({
+        textInfo: { x: x + o[0], y: y + o[1], text, size, align: 'center', font: 'monospace', color: [gc[0], gc[1], gc[2], 140] },
+        playerIds
+    }));
+    nodes.push(new GameNode.Text({ textInfo: { x, y, text, size, align: 'center', font: 'monospace', color }, playerIds }));
+    return nodes;   // add all to the tree; the bright core is last so it draws on top
+}
+```
+
+**Transparency and fading — `fill` alpha is nearly binary; real fades use `color` alpha.** The client renders `fill`'s alpha byte through CSS, which clamps it: `fill[3] = 0` is invisible, but **any `fill[3] ≥ 1` renders essentially opaque** — you cannot fade a shape by animating `fill` alpha. What actually fades a node is the **`color` field's alpha**, which drives the canvas global alpha for that node:
+
+```js
+// Fade a node out over time (e.g. a particle or a "derez" trail):
+node.node.color = [r, g, b, Math.round(255 * lifeRemaining / lifeTotal)];
+this.base.node.onStateChange();
+```
+
+Caveats:
+- The global alpha is only reset by the **next node that has a `color`** — a faded node can "leak" its transparency onto later-drawn shapes that lack one. Rule: **when you fade anything, give every visible `Shape` an explicit `color`** (use `[255,255,255,255]` when you don't need a stroke).
+- Glow persists at full strength while a node fades via `color` alpha; set `effects = null` when starting a fade-out.
 
 ---
 
 ## 8. Player visibility model (`playerIds`)
 
-Every node has `playerIds`, an array controlling who sees it:
+Every node has `playerIds`, an array controlling who sees it. **Get these semantics right — they are commonly stated backwards:**
 
-- `[0]` (the default) → **visible to all players.**
+- `[]` (empty — the default when you omit `playerIds`) → **visible to all players.**
 - `[42]` → visible only to player `42`.
 - `[42, 99]` → visible to players `42` and `99`.
+- `[0]` → **visible to NOBODY** (player ids start at 1, so scoping to `0` hides the node from everyone). This is the standard trick for hiding a node without removing it — e.g. a JOIN button once everyone has joined.
+
+Scoping applies to the **whole subtree**: children of a scoped node are only sent to that node's players (a child can narrow the set further with its own `playerIds`, but not widen it). For a scoped button, it's still good practice to set the same `playerIds` on both the shape and its label. Clicks respect scoping too — a node scoped away from a player can't be clicked by them (§9).
 
 This is how you build per-player UI (private hands, individual HUDs, "your turn" prompts) in a single shared game. Helpers on every node:
 
 ```js
-node.showFor(playerId);   // add a player to the visibility set (and drop the "everyone" 0)
-node.hideFor(playerId);   // remove a player; if none left, reverts to [0] (everyone)
+node.showFor(playerId);   // add a player to the visibility set (and drop a hiding 0)
+node.hideFor(playerId);   // remove a player; if none left, sets [0] (hidden from everyone)
 // or set directly, then notify:
 node.node.playerIds = [playerId];
 this.base.node.onStateChange();
 ```
+
+> **Privacy caveat (secrets games, frameless sessions):** the server builds a filtered frame only for players who appear in **at least one node's `playerIds`**. A connected player with **zero** nodes scoped to them falls back to the raw unfiltered state — i.e. **they receive everyone's "private" nodes**. In framed sessions the platform chrome scopes nodes per player, masking this; in frameless sessions (studio / direct play flows) it's live. If your game has real secrets (hidden words, private hands), give **every connected player** a persistent scoped node in `handleNewPlayer` — a zero-size invisible "privacy anchor" is enough:
+>
+> ```js
+> handleNewPlayer({ playerId }) {
+>     const anchor = new GameNode.Shape({
+>         shapeType: Shapes.POLYGON,
+>         coordinates2d: ShapeUtils.rectangle(0, 0, 0, 0),
+>         playerIds: [playerId]
+>     });
+>     this.anchors[playerId] = anchor;
+>     this.base.addChild(anchor);
+>     // remove it in handlePlayerDisconnect
+> }
+> ```
+
+> **Frameless identity:** don't rely on the platform frame to tell players who they are — frameless sessions have no chrome, and `info.name` can be absent (fall back to `'PLAYER ' + playerId`). Wherever the game shows a roster (lobby list, scoreboard, turn order), add a small **"YOU" marker scoped to each player** next to their own entry, and when a player is assigned a color/avatar, show them a scoped "YOU ARE THE CYAN SHIELD"-style banner.
 
 Example — give each player their own colored marker only they can see:
 
@@ -425,10 +493,71 @@ const button = new GameNode.Shape({
 
 Clicks and taps are unified — `onClick` fires for both mouse and touch. Make tap targets generously sized for mobile.
 
-### Keyboard
-Implement `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)`. `key` is the standard browser key string: `'ArrowUp'`, `'ArrowDown'`, `'ArrowLeft'`, `'ArrowRight'`, `'w'`, `'a'`, `'s'`, `'d'`, `' '` (space), `'Enter'`, single characters, etc. Support both arrows and WASD for movement. Debounce with per-player cooldowns if needed (see the movement example in §14).
+#### 9.1 Click routing: the topmost node wins, clickable or not
 
-> Mobile players have no physical keyboard. If your game needs keyboard control, also provide on-screen `onClick` buttons, or design click/tap-first.
+The server resolves a click to the **topmost node whose polygon contains the point** — draw order (parent before children, siblings in insertion order; later = on top). Crucially, **it does not skip non-clickable nodes**: if the topmost containing node has no `onClick`, the click is **silently dropped** — it does not fall through to a clickable node underneath. Two consequences:
+
+1. **Container/layer nodes must be zero-size.** The common pattern of grouping nodes under invisible full-screen `Shape` "layers" (HUD layer, particle layer, overlay) will **swallow every click on anything drawn beneath them** if those containers are `rectangle(0, 0, 100, 100)`. Make containers `rectangle(0, 0, 0, 0)` — children render and receive clicks normally, and the container itself can never intercept a click:
+
+```js
+makeContainer() {
+    return new GameNode.Shape({
+        shapeType: Shapes.POLYGON,
+        coordinates2d: ShapeUtils.rectangle(0, 0, 0, 0)   // zero-size: never swallows clicks
+    });
+}
+```
+
+2. **Full-screen tap steering needs a dedicated tap-catcher.** Putting `onClick` on your background/root doesn't work once anything is drawn over it — taps land on trails, enemies, terrain, etc. and die there. Instead add a transparent full-screen `Shape` **above the playfield but below the UI buttons**, and put the tap handler on it (buttons must be later siblings so they still win):
+
+```js
+this.tapCatcher = new GameNode.Shape({
+    shapeType: Shapes.POLYGON,
+    coordinates2d: ShapeUtils.rectangle(0, 0, 100, 100),   // no fill -> invisible, still clickable
+    onClick: (playerId, x, y) => this.handleTap(playerId, x, y)
+});
+// draw order: playfield layers, THEN tapCatcher, THEN hud/overlay (buttons)
+this.base.addChildren(this.trailLayer, this.particleLayer, this.tapCatcher, this.hud, this.overlay);
+```
+
+Also: `playerIds` scoping applies to clicks (a node hidden from a player can't be clicked by them — this is how per-player buttons work), and `Text` nodes never intercept clicks (no `coordinates2d`), so a button's label can't create a dead zone.
+
+### Keyboard
+Implement `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)`. `key` is the standard browser key string: `'ArrowUp'`, `'ArrowDown'`, `'ArrowLeft'`, `'ArrowRight'`, `'w'`, `'a'`, `'s'`, `'d'`, `' '` (space), `'Enter'`, single characters, etc. The client forwards printable characters (`' '`–`'z'`, including capitals and digits), the arrow keys, `Backspace`, `Enter`, and `Meta` — nothing else. Support both arrows and WASD for movement.
+
+**How held keys actually arrive:** the client sends one `keydown` on the physical press, then **re-sends `keydown` every ~33ms while the key is held — with NO initial delay** — and sends a debounced `keyup` on release. This is ideal for movement (hold-to-move just works) and catastrophic for typing: a normal ~100ms keystroke delivers 3–4 duplicate `keydown`s, so naive `buffer += key` types `"hhhh"`.
+
+#### Live typing (a text editor that feels like a document)
+
+`input: { type: 'text' }` (below) opens a **modal prompt** — fine for one-shot entry (a name, a guess), wrong for live typing. For text that appears on screen as the player types, build on raw `handleKeyDown` and reconstruct real keyboard feel by gating the 33ms re-sends like an OS keyboard: a key not seen recently is a fresh press (types instantly); while held, the re-sends are a *hold heartbeat* that only types after an initial delay, then at a fast repeat rate. This also makes held-Backspace erase properly.
+
+```js
+// per player: writer.keys = {}
+handleKeyDown(playerId, key) {
+    if (key !== 'Backspace' && key !== 'Enter' && key.length !== 1) return;
+    const now = Date.now();
+    const state = this.writers[playerId].keys[key];
+
+    if (!state || now - state.lastSeen > 400) {          // fresh physical press
+        this.writers[playerId].keys[key] = { lastSeen: now, repeatAt: now + 450 };
+        this.applyKey(playerId, key);                     // type it IMMEDIATELY
+        return;
+    }
+    state.lastSeen = now;                                 // held: heartbeat
+    if (now >= state.repeatAt) {                          // repeat after 450ms,
+        state.repeatAt = now + 55;                        // then ~18 chars/sec
+        this.applyKey(playerId, key);
+    }
+}
+handleKeyUp(playerId, key) { delete this.writers[playerId].keys[key]; }
+// applyKey: append / Backspace-slice / '\n' on Enter, re-render the text
+// nodes, then onStateChange() — mutate in the handler, not in tick(), so
+// letters land on screen with zero added latency.
+```
+
+The 400ms staleness check doubles as a safety net: if a `keyup` is ever lost, the key un-sticks by itself. See `src/games/text-input` (Typewriter) in homegames-core for the complete pattern with wrapping, a blinking cursor, and a tap-to-type prompt fallback for phones.
+
+> Mobile players have no physical keyboard. If your game needs keyboard control, also provide on-screen `onClick` buttons (or the `input:{type:'text'}` prompt for text), or design click/tap-first.
 
 ### Text input (on-screen fields)
 
@@ -494,7 +623,7 @@ tick() {
 1. Declare them in `metadata().assets`, keyed by a short name, each an `Asset` instance with an `id` (the asset's hash in the Homegames asset store) and `type`:
 
 ```js
-const { Asset } = require('squish-138');
+const { Asset } = require('squish-142');
 // ...
 assets: {
     'hero':   new Asset({ id: 'c0ffee...hash', type: 'image' }),
@@ -516,6 +645,8 @@ assets: {
 - `GeometryUtils.checkCollisions(root, node, filter?)` — returns nodes under `root` that overlap `node` (axis-aligned rectangle test). Optional `filter(node) => boolean` to limit candidates. Useful but simple; many games hand-roll AABB checks for control (see §14).
 - `ViewUtils.getView(plane, view, playerIds, translation?, scale?)` — projects a slice of a large world into the `0–100` viewport; optional `translation`/`scale` inset the projection into part of the screen (see §13 / §13.1).
 - `Shapes.POLYGON | LINE` — shape type enum (`CIRCLE` exists but is not rendered).
+- `Physics.getPath(...)` — **straight-line paths only** (no gravity, no arcs). For ballistics (artillery arcs, thrown objects), integrate yourself in `tick()`: `vy += GRAVITY; x += vx; y += vy;` with a few substeps per tick so fast projectiles don't tunnel through thin geometry.
+- `TerrainGenerator` — generates **maze-style wall grids** (cells with open/blocked edges), not heightmaps. For rolling-hills/silhouette terrain, build your own heightmap (layered sines work well) and render it as one polygon — mind the ~126-vertex cap (§6).
 
 ---
 
@@ -528,7 +659,7 @@ Everything above renders directly into the shared `0–100` plane, where every p
 ### Setup
 
 ```js
-const { ViewableGame, GameNode, Colors, Shapes, ShapeUtils, ViewUtils } = require('squish-138');
+const { ViewableGame, GameNode, Colors, Shapes, ShapeUtils, ViewUtils } = require('squish-142');
 
 class MyWorld extends ViewableGame {
     constructor() {
@@ -673,7 +804,9 @@ renderForPlayer(playerId) {
 Gotchas:
 - The projection includes only nodes that **overlap** the `view` rectangle (a collision test against the plane's children), so off-screen world content is free — but a node straddling the view edge has its vertices **clamped to `0–100` individually**, which can distort a shape that's half in and half out. Size views so content isn't sliced, or accept the clamp.
 - `getView` returns a brand-new subtree each call. To scroll or pan, rebuild that player's projection (`clearChildren()` + re-add, or swap the subtree) and `onStateChange()` — see the `panCamera` example above.
-- `onClick` survives projection (the clone keeps its handler), so projected world nodes stay tappable.
+- `onClick` survives projection (the clone keeps its handler), so projected world nodes stay tappable. But the clones cover the viewport, so a **tap-anywhere steering control needs a per-player tap-catcher drawn above the projected view** (§9.1) — an `onClick` on the player's backdrop node gets swallowed by the world clones on top of it.
+- **`getView` overwrites `playerIds` on every clone** with the viewing player's id. World-space nodes cannot stay private through projection — a node scoped to player A in the world will still appear in player B's projected view if it's inside B's view rectangle. Keep per-player-secret UI in **screen space** (plain `0–100` nodes with `playerIds`), not in the world.
+- **Cost scales with visible nodes × players × ticks** — every camera update clones every node in view. Keep the world sparse (dozens of nodes in view, not hundreds), tick at 10–20, and prefer a camera-follow clamp like `view.x = clamp(shipX - 50, 0, WORLD - 100)`.
 
 **Choosing:** use plain `Game` for single-screen games (most party/casual games). Use `ViewableGame` only when the world exceeds one screen or players need different cameras. Approach A is less code when the world is mostly static nodes; Approach B is better for smooth camera-follow and lots of moving entities. Either way: clean up a player's view root in `handlePlayerDisconnect`, and `getLayers()` returns `[{ root: this.getViewRoot() }]`.
 
@@ -684,13 +817,13 @@ Gotchas:
 ### 14.1 Single-player click game (event-driven, no tick)
 
 ```js
-const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-138');
+const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-142');
 const { COLORS } = Colors;
 
 class ClickCounter extends Game {
     static metadata() {
         return {
-            squishVersion: '138',
+            squishVersion: '142',
             name: 'Click Counter',
             author: 'AI',
             description: 'Tap the square to score points.',
@@ -739,13 +872,13 @@ module.exports = ClickCounter;
 ### 14.2 Multiplayer movement game (players join, move with keys, tick loop)
 
 ```js
-const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-138');
+const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-142');
 const { COLORS } = Colors;
 
 class Movers extends Game {
     static metadata() {
         return {
-            squishVersion: '138',
+            squishVersion: '142',
             name: 'Movers',
             author: 'AI',
             description: 'Everyone gets a square. Move with arrows or WASD.',
@@ -825,13 +958,82 @@ class Movers extends Game {
 module.exports = Movers;
 ```
 
+### 14.3 Bots and enemy AI (games must be fun with one player)
+
+A game that needs 2+ players demos badly. The shipped catalog pattern: **bots fill empty slots at match start, and a disconnecting player's avatar is handed to a bot brain** (`agent.playerId = null; agent.isBot = true;`) so rounds never break. Keep entities as plain data (`{ x, y, angle, isBot, ... }`) and run bot logic in `tick()`.
+
+Two building blocks cover most enemies:
+
+```js
+// Wander: walk forward, turn away from walls, jitter occasionally.
+botWander(bot) {
+    const aheadX = bot.x + Math.cos(bot.angle) * 0.7;
+    const aheadY = bot.y + Math.sin(bot.angle) * 0.7;
+    if (this.isBlocked(aheadX, aheadY)) {
+        bot.angle += (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 2 + (Math.random() - 0.5) * 0.8);
+    } else if (Math.random() < 0.04) {
+        bot.angle += (Math.random() - 0.5) * 1.2;   // occasional random turn
+    }
+    this.moveWithCollision(bot, 0.75);
+}
+
+// Line of sight: sample the segment between two entities for obstacles.
+hasLineOfSight(from, to) {
+    const dist = Math.hypot(to.x - from.x, to.y - from.y);
+    for (let step = 0.3; step < dist - 0.2; step += 0.3) {
+        const t = step / dist;
+        if (this.isBlocked(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t)) return false;
+    }
+    return true;
+}
+```
+
+**The fairness rules — this is what separates a fun bot from an aimbot.** A bot that acquires a target and fires in the same tick with perfect aim is unbeatable and feels terrible. Combat bots must run a three-state loop:
+
+1. **Acquire** — scan a few times per second (not every tick), only when the bot's own cooldown is ready, only within a capped engage range, and only with line of sight.
+2. **Telegraph** — on acquiring, the bot **stops moving and visibly turns toward the target for 0.5–1s** (`aimTicks` countdown, rotating a capped amount per tick). This is the victim's window to dodge or fight back. Cancel the aim if the target breaks line of sight, leaves range, or becomes invulnerable.
+3. **Fire with error** — when the telegraph expires, fire with **aim error that grows with distance** (`angle = perfect + (Math.random() - 0.5) * (0.1 + dist * 0.05)`), then take a **cooldown 2–3× longer than a human's**.
+
+Difficulty knobs, in order of impact: telegraph duration, aim-error slope, bot cooldown, engage range. Tune by simulation: a *stationary* target at mid-range should survive ~2s after being spotted; a moving one much longer. Also respect spawn-protection windows, and never let bots re-acquire while still cooling down.
+
+### 14.4 Pseudo-3D: a first-person raycaster (yes, really)
+
+Because every player can have a fully private view (`playerIds`), and a view is just rectangles, the server can render **real-time first-person 3D**: give each player a strip of vertical wall-slice rects and recompute them every tick with a grid raycast. This is the most advanced pattern in the catalog (`prism-3d`), and it works — a multiplayer FPS in one file.
+
+The essentials:
+
+- **One slice rect per screen column, created ONCE per player at join** (stable node ids — never recreate them), scoped `playerIds: [pid]`. ~48–56 columns reads convincingly retro. Each tick, mutate every slice's `coordinates2d` + `fill`, then one `onStateChange()`.
+- **DDA raycast per column** (Lodev camera-plane style — use the *perpendicular* distance so walls don't fisheye):
+
+```js
+const dirX = Math.cos(p.angle), dirY = Math.sin(p.angle);
+const planeX = -dirY * 0.66, planeY = dirX * 0.66;        // ~66° FOV
+for (let col = 0; col < COLS; col++) {
+    const cameraX = (2 * col) / (COLS - 1) - 1;
+    // step the ray cell-by-cell through the grid (DDA) until it hits a wall,
+    // tracking which axis was crossed last (side) and the perpendicular dist
+    const { dist, side, wallType } = this.castRay(p.x, p.y, dirX + planeX * cameraX, dirY + planeY * cameraX);
+    const h = Math.min(100, HEIGHT_K / dist);              // wall slice height
+    const shade = Math.max(0.1, 1.15 / (1 + dist * 0.24)) * (side ? 0.72 : 1);
+    slice.node.coordinates2d = ShapeUtils.rectangle(col * COL_W, 50 - h / 2, COL_W + 0.05, h);
+    slice.node.fill = wallColor(wallType).map(c => Math.round(c * shade));
+    this.lastDists[col] = dist;                            // saved for sprite occlusion
+}
+```
+
+- **Ceiling, floor, and horizon are identical for everyone → shared nodes** (no `playerIds`). Same for the minimap and score strip. Only the slices and sprites are per-player.
+- **Other entities are billboard sprites**: camera-plane transform (`transX/transY`), screen x = `50 * (1 + transX / transY)`, height = `K / transY`, and **occlude by comparing `transY` against `lastDists[column]`** from the wall pass. One rect + one detail rect per visible entity is plenty.
+- **Budget honestly**: per-player bandwidth ≈ (shared nodes + own scoped nodes) × ~55 bytes × tickRate. 56 columns at tickRate 12 ≈ 100 KB/s per player — fine on LAN, borderline over a relay. `COLS` and `tickRate` are the knobs; cap humans at ~4 (bots need no view). tickRate 10–14 reads as intentionally retro.
+- Movement: apply moves on input events (key repeat / held-tap re-clicks give continuity), slide along walls by resolving the x and y axes independently, and keep a body radius so players don't clip corners.
+- Controls: tap left/right thirds = turn, center = forward, plus a FIRE button — with the tap catcher **above the slices, below the buttons** (§9.1), and the crosshair *below* the catcher so it can't eat center taps.
+
 ---
 
 ## 15. Idioms and anti-patterns (checklist before you output)
 
 Do:
 - [ ] `module.exports = TheClass;` at the end (export the class, not an instance).
-- [ ] `require('squish-138')` and `squishVersion: '138'` agree.
+- [ ] `require('squish-142')` and `squishVersion: '142'` agree.
 - [ ] Call `super()` first thing in the constructor.
 - [ ] Build a single root `this.base` shape sized `rectangle(0,0,100,100)`; return it from `getLayers()` as `[{ root: this.base }]`. (For worlds bigger than one screen or per-player cameras, extend `ViewableGame` and render `getViewRoot()` instead — §13.)
 - [ ] Call `onStateChange()` on the root after any direct property mutation (§4).
@@ -839,6 +1041,9 @@ Do:
 - [ ] Clean up a leaving player's nodes in `handlePlayerDisconnect`.
 - [ ] Size click/tap targets generously and support tap-first or both arrows+WASD.
 - [ ] Keep everything in `0–100` coordinate space.
+- [ ] Make grouping/"layer" containers **zero-size** (`rectangle(0,0,0,0)`) so they never swallow clicks (§9.1); full-screen tap steering goes on a dedicated tap-catcher above the playfield, below the buttons.
+- [ ] Give every roster/scoreboard a per-player scoped "YOU" marker, and secrets games a per-player privacy anchor (§8) — frameless sessions have no chrome and no guaranteed name.
+- [ ] Give each game a distinct color identity (don't default every game to dark-navy + neon); keep action games at tickRate 15–30.
 
 Don't:
 - [ ] Don't forget `onStateChange()` — mutating `coordinates2d`/`fill`/`text` without it shows nothing.
@@ -850,8 +1055,13 @@ Don't:
 - [ ] Don't spin up one game instance per player — it's one shared instance; use `playerIds` for per-player views.
 - [ ] Don't invent asset ids. If you have none, draw with shapes and text instead of `Asset` nodes.
 - [ ] Don't use coordinates outside `0–100` expecting them to be visible.
+- [ ] Don't give a single node more than ~126 vertices — the wire frame overflows (§6).
+- [ ] Don't put full-screen invisible containers above clickable things — the hit-test stops at the topmost containing node and drops the click (§9.1).
+- [ ] Don't animate `fill` alpha to fade a node — it renders opaque for any value ≥ 1; fade via `color` alpha instead, and set an explicit `color` on nodes drawn after faded ones (§7.4).
+- [ ] Don't set `effects = {}` to clear an effect — use `null` (§7.4). Don't put `effects` on `Text` (not supported; use offset-copy glow).
+- [ ] Don't scope with `playerIds: [0]` expecting "everyone" — `[0]` means **nobody**; omit `playerIds` (empty) for everyone (§8).
 - [ ] Don't rely on sub-`0.01` precision — per-frame motion below ~`0.01` units rounds away (§6). Keep deltas ≥ ~0.05 or accumulate off-node.
-- [ ] Don't use the `crop*` asset fields on `squish-138`/`139` — cropping needs `squish-140`+ (§7.3.1); on older versions they're ignored.
+- [ ] Don't use the `crop*` asset fields on `squish-142`/`139` — cropping needs `squish-140`+ (§7.3.1); on older versions they're ignored.
 - [ ] Don't block the event loop (no busy loops, no synchronous long work); drive motion from `tick()`.
 - [ ] Don't assume a keyboard exists on mobile — provide on-screen controls if keys are core.
 
@@ -860,15 +1070,16 @@ Don't:
 ## 16. Quick reference card
 
 ```
-require('squish-138')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, GeometryUtils, Asset, Physics, ... }
+require('squish-142')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, GeometryUtils, Asset, Physics, ... }
 
 Game hooks:   metadata() [static, required] · constructor()->super() · getLayers()->[{root}]
               handleNewPlayer({playerId,info,settings,clientInfo}) · handlePlayerDisconnect(playerId)
               handleKeyDown(playerId,key) · handleKeyUp(playerId,key) · tick() · canAddPlayer() · close()
 
-Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, onClick, playerIds })  // clickable
+Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, onClick, effects, playerIds })  // clickable
               border = NUMBER (outline width), NOT an object; stroke uses `color` -> set both. fill=interior.
               round shape: build a many-sided polygon (CIRCLE doesn't render). rotate verts with trig (§7.1).
+              max ~126 vertices per node (§6). effects:{shadow:{color,blur}} = glow; clear with null, never {} (§7.4).
               GameNode.Text({ textInfo:{ text,x,y,size,align,color,font }, playerIds })       // NO onClick
               GameNode.Asset({ coordinates2d, assetInfo:{ key:{pos:{x,y},size:{x,y},startTime} }, playerIds })  // clickable
               Asset crop (squish-140+): assetInfo.key.{cropLeft,cropTop,cropRight,cropBottom} = % inset per edge -> spritesheets (§7.3.1)
@@ -882,11 +1093,25 @@ Shapes:       Shapes.POLYGON | LINE   (CIRCLE constant exists but does NOT rende
 Coords:       ShapeUtils.rectangle(x,y,w,h) · ShapeUtils.triangle(x1,y1,x2,y2,x3,y3) · plane is 0..100
 Colors:       Colors.COLORS.RED ... ([r,g,b,a] 0..255) · Colors.randomColor(['BLACK',...])  // exclude by NAME, not value
 Aspect:       plane is 0..100 but stretched to aspectRatio -> use {1,1} for circles/orbits/true angles (§5)
-Hide a node:  set fill [0,0,0,0] (don't rely on playerIds:[])
+              text height in y-units = size * (aspectX/aspectY); square rect: h = w * (x/y) (§5)
+Hide a node:  playerIds = [0] (nobody) or fill [0,0,0,0]
+Fade a node:  animate `color` alpha (fill alpha is opaque for any value >= 1) (§7.4)
 onClick:      (playerId, x, y) => {}    // Shape/Asset only
-text input:   Shape/Text input:{ type:'text', oninput:(playerId, value)=>{} }  // value = full field text
+Click routing: topmost CONTAINING node wins, clickable or not -> containers must be rectangle(0,0,0,0);
+              full-screen taps need a tap-catcher above the playfield, below the buttons (§9.1)
+text input:   Shape/Text input:{ type:'text', oninput:(playerId, value)=>{} }  // MODAL prompt; one-shot entry
+Live typing:  held keys re-send keydown every ~33ms with NO delay -> gate them like an OS keyboard:
+              fresh press (not seen >400ms) types instantly; held repeats after 450ms at ~18cps (§9 Keyboard)
 hover:        Shape/Asset onHover(pid) / offHover(pid)   // cosmetic only; no hover on touch
-playerIds:    [0] = everyone (default) · [id,...] = only those players
+playerIds:    [] / omitted = everyone (default) · [id,...] = only those · [0] = NOBODY (hide)
+              scoping covers the subtree; players with NO scoped nodes get the UNFILTERED state ->
+              secrets games: per-player zero-size privacy anchor + scoped "YOU" markers (§8)
+
+Bots:         fill empty slots at match start; hand disconnected players' avatars to a bot brain (§14.3)
+              fair combat bots: acquire (LOS + range + own cooldown) -> TELEGRAPH 0.5-1s (stop, turn toward
+              target) -> fire with distance-scaled aim error -> 2-3x human cooldown. NEVER snap-fire.
+3D:           per-player raycast view = N playerIds-scoped slice rects (stable ids) mutated per tick (§14.4)
+              share floor/ceiling/HUD; occlude sprites vs per-column wall dists; COLS x tickRate = bandwidth
 
 Big worlds:   extend ViewableGame · super(planeSize) · getPlane()/getPlaneSize() = world
               getViewRoot() = render root (starts EMPTY) · getLayers()->[{root:getViewRoot()}]
