@@ -581,7 +581,26 @@ const searchBox = new GameNode.Shape({
 - `oninput` fires on change; treat `value` as the field's entire current string.
 - This is exactly the mechanism the Homegames dashboard's own search box uses, so it is the same well-trodden path the platform relies on.
 - Scope the field with `playerIds` (§8) so only the intended player sees and edits it — `input` is per node, but visibility still follows `playerIds`.
-- There is also `type: 'file'` for uploads; its `oninput(playerId, files)` receives an **array** of files instead of a string. Rarely needed in games.
+- There is also `type: 'file'` for uploads (images and audio). Its handler is `oninput(playerId, bytes, meta)`: `bytes` is a plain array of byte values (0–255), and `meta` is `{ kind, contentType, fileName }` where `kind` is `'image'`, `'audio'`, or `null` (sniffed server-side from the file's magic bytes — trust it over `contentType`, which is client-reported). Uploads are capped at 5 MB. To use an upload, wrap the bytes in an `Asset` typed by `meta.kind` and register it via the `addAsset` constructor option, then reference it from a `GameNode.Asset` as usual (audio plays while its node is in the tree):
+
+```js
+constructor({ addAsset }) {
+    super();
+    this.addAsset = addAsset;
+    // ...
+    input: {
+        type: 'file',
+        oninput: (playerId, bytes, meta) => {
+            if (!meta.kind) return;   // not a recognized image/audio file
+            const key = `upload-${meta.kind}-${++this.uploadCount}`;
+            this.addAsset(key, new Asset({ id: key, type: meta.kind }, bytes)).then(() => {
+                // now reference `key` from a GameNode.Asset (see §7.3)
+            });
+        }
+    }
+}
+```
+  See `src/games/input-test` in homegames-core for a complete image + audio upload example (including replaying an uploaded sound).
 
 ### Hover
 
@@ -1100,6 +1119,8 @@ onClick:      (playerId, x, y) => {}    // Shape/Asset only
 Click routing: topmost CONTAINING node wins, clickable or not -> containers must be rectangle(0,0,0,0);
               full-screen taps need a tap-catcher above the playfield, below the buttons (§9.1)
 text input:   Shape/Text input:{ type:'text', oninput:(playerId, value)=>{} }  // MODAL prompt; one-shot entry
+file upload:  input:{ type:'file', oninput:(playerId, bytes, meta)=>{} }  // bytes = byte array (<=5MB),
+              meta = { kind:'image'|'audio'|null, contentType, fileName }; register via addAsset (§9)
 Live typing:  held keys re-send keydown every ~33ms with NO delay -> gate them like an OS keyboard:
               fresh press (not seen >400ms) types instantly; held repeats after 450ms at ~18cps (§9 Keyboard)
 hover:        Shape/Asset onHover(pid) / offHover(pid)   // cosmetic only; no hover on touch

@@ -365,7 +365,8 @@ class GameSession {
                         || (topLayer && topLayer.findChild(input.nodeId));
                     if (node && node.node && node.node.input) {
                         if (node.node.input.type === 'file') {
-                            node.node.input.oninput(pid, Object.values(input.input || {}));
+                            const fileBytes = this._decodeFileInput(input.input);
+                            if (fileBytes) node.node.input.oninput(pid, fileBytes, this._buildFileMeta(fileBytes, input));
                         } else {
                             node.node.input.oninput(pid, input.input);
                         }
@@ -385,6 +386,57 @@ class GameSession {
         } catch (e) {
             console.error(`[GameSession] Error handling input type="${input.type}" for player ${pid}:`, e);
         }
+    }
+
+    // File uploads arrive as base64 (current clients) or as a JSON-ified
+    // Uint8Array {"0":137,...} (older clients). Decode either into the plain
+    // byte array games expect, rejecting empty or oversized payloads.
+    // Mirrored in homegames-client's LocalDispatcher — keep them in sync.
+    _decodeFileInput(raw) {
+        const MAX_FILE_INPUT_BYTES = 8 * 1024 * 1024;
+        if (typeof raw === 'string') {
+            const buf = Buffer.from(raw, 'base64');
+            if (buf.length === 0 || buf.length > MAX_FILE_INPUT_BYTES) return null;
+            return Array.from(buf);
+        }
+        if (raw && typeof raw === 'object') {
+            const bytes = Object.values(raw);
+            if (bytes.length === 0 || bytes.length > MAX_FILE_INPUT_BYTES) return null;
+            return bytes;
+        }
+        return null;
+    }
+
+    // Classify uploaded bytes by magic numbers — authoritative over the
+    // client-reported mime, which is spoofable and often missing.
+    _sniffFileKind(b) {
+        if (b.length > 3 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image'; // PNG
+        if (b.length > 2 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image';                  // JPEG
+        if (b.length > 2 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image';                  // GIF
+        if (b.length > 11 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) {              // RIFF
+            if (b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image';           // WEBP
+            if (b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45) return 'audio';           // WAVE
+        }
+        if (b.length > 2 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'audio';                  // MP3 (ID3)
+        if (b.length > 1 && b[0] === 0xFF && (b[1] & 0xE0) === 0xE0) return 'audio';                          // MP3 (frame sync)
+        if (b.length > 3 && b[0] === 0x4F && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return 'audio'; // Ogg
+        if (b.length > 3 && b[0] === 0x66 && b[1] === 0x4C && b[2] === 0x61 && b[3] === 0x43) return 'audio'; // FLAC
+        if (b.length > 11 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return 'audio'; // MP4/M4A (ftyp)
+        return null;
+    }
+
+    // Meta passed as oninput's third argument for file uploads.
+    // Mirrored in homegames-client's LocalDispatcher — keep them in sync.
+    _buildFileMeta(bytes, input) {
+        const contentType = (typeof input.contentType === 'string' && input.contentType.length <= 100)
+            ? input.contentType : null;
+        let kind = this._sniffFileKind(bytes);
+        if (!kind && contentType) {
+            if (contentType.indexOf('image/') === 0) kind = 'image';
+            else if (contentType.indexOf('audio/') === 0) kind = 'audio';
+        }
+        const fileName = typeof input.fileName === 'string' ? input.fileName.slice(0, 128) : null;
+        return { kind, contentType, fileName };
     }
 
     // -----------------------------------------------------------------------
