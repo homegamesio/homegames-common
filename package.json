@@ -20,6 +20,7 @@
     "acorn": "^8.11.3",
     "decompress": "^4.2.1",
     "squish-142": "npm:squishjs@1.4.2",
+    "squish-143": "npm:squishjs@1.4.3",
     "dockerode": "^4.0.10",
     "tar": "^7.0.0",
     "unzipper": "^0.10.11",
