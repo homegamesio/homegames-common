@@ -389,20 +389,22 @@ class GameSession {
     }
 
     // File uploads arrive as base64 (current clients) or as a JSON-ified
-    // Uint8Array {"0":137,...} (older clients). Decode either into the plain
-    // byte array games expect, rejecting empty or oversized payloads.
+    // Uint8Array {"0":137,...} (older clients). Decode either into a Buffer,
+    // rejecting empty or oversized payloads. Must stay a Buffer, never a plain
+    // number array — games retain these bytes in Assets, and a JS array costs
+    // ~8x the file size in V8.
     // Mirrored in homegames-client's LocalDispatcher — keep them in sync.
     _decodeFileInput(raw) {
         const MAX_FILE_INPUT_BYTES = 8 * 1024 * 1024;
         if (typeof raw === 'string') {
             const buf = Buffer.from(raw, 'base64');
             if (buf.length === 0 || buf.length > MAX_FILE_INPUT_BYTES) return null;
-            return Array.from(buf);
+            return buf;
         }
         if (raw && typeof raw === 'object') {
             const bytes = Object.values(raw);
             if (bytes.length === 0 || bytes.length > MAX_FILE_INPUT_BYTES) return null;
-            return bytes;
+            return Buffer.from(bytes);
         }
         return null;
     }
@@ -554,7 +556,10 @@ class GameSession {
     _send(ws, data) {
         try {
             if (ws.readyState === WebSocket.OPEN || ws.readyState === 1) {
-                ws.send(Buffer.from(data));
+                // ws never mutates outgoing buffers, so one Buffer (e.g. the
+                // asset bundle) can be shared across every recipient instead
+                // of copied per send.
+                ws.send(Buffer.isBuffer(data) ? data : Buffer.from(data));
             }
         } catch (e) {
             // Swallow send errors — client likely disconnected
