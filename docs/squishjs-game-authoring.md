@@ -6,16 +6,22 @@
 
 ## 1. What a Homegames game is
 
-A Homegames game is a **single JavaScript class** that extends `Game` from a versioned SquishJS package. The server (`homegames-core`) instantiates the class, repeatedly serializes ("squishes") its scene graph into a compact binary form, and streams it to every connected browser client over WebSocket. Clients render the scene and send input (clicks, key presses) back to the server, which calls methods on your game instance.
+A Homegames game is a **single JavaScript class** that extends `Game` from a versioned SquishJS package (the entry point is `index.js`, but the game may be split across as many of its own files as it likes via relative `require`s — see §2). The Homegames runtime instantiates the class, repeatedly serializes ("squishes") its scene graph into a compact binary form, and feeds it to a renderer. That runtime exists in **two places, and the same game code must run identically in both**:
+
+- **Hosted session (multiplayer):** a Node server runs the game; every player's browser connects over WebSocket, renders frames, and sends input back. One shared instance serves all players.
+- **Local session (single-player / instant play / downloads):** the player's own browser runs the game — the platform ships your source files to a `LocalSession` that executes the class client-side with the *same* squish engine, tick loop, input pipeline, and per-player frame logic. No server involved. This is how games on homegames.io play instantly, and how a downloaded game (a single self-contained HTML file) runs offline.
+
+Your game cannot tell which one it's in, and must never try. Same constructor arguments, same handler payloads, same rendering — the deliberate differences are that a local session has exactly **one player** (id `1`), stubbed persistence/services, and no spectators.
 
 Key mental model:
 
 - **You never render or draw.** You build and mutate a tree of nodes (`Shape`, `Text`, `Asset`). The client draws them.
-- **You never write networking.** The server multiplexes all players into one shared game instance. Player input arrives as method calls.
-- **Your code runs in Node on the server, not in a browser.** There is no `window`, `document`, `location`, `alert`, `localStorage`, or DOM. A "play again" button that calls `location.reload()` throws a `ReferenceError` and crashes the session. Restart/replay is always done by **resetting your own state in place** — clear the relevant nodes, reset your variables, rebuild the play field.
+- **You never write networking.** The runtime multiplexes all players into one shared game instance. Player input arrives as method calls.
+- **Treat browser globals as nonexistent.** There is no `window`, `document`, `location`, `alert`, `localStorage`, or DOM in your game's world. Hosted sessions run in Node, where `location.reload()` in a "play again" handler throws a `ReferenceError` and crashes the session — and even in a browser-side local session the loader hands your code only `module`/`exports`/`require`. The same file must run in both runtimes, so the rule is absolute. Restart/replay is always done by **resetting your own state in place** — clear the relevant nodes, reset your variables, rebuild the play field.
 - **The coordinate plane is `0–100` on both axes**, regardless of screen size or aspect ratio. `(0,0)` is top-left, `(100,100)` is bottom-right. Think percentages.
 - **State changes are not automatic.** After you mutate a node, you must signal it (see §4). This is the #1 mistake — read §4 carefully.
 - **The game is shared, not per-player.** One instance serves all players. Per-player visuals are done with `playerIds` (see §8), not separate instances.
+- **Single-player is a first-class product path.** A game that does not declare the `multiplayer` service (§5) is presented on homegames.io with an instant in-browser "Play" button and is downloadable as an offline file. A game that *only* works with 2+ humans demos badly everywhere (§14.3).
 
 ---
 
@@ -197,12 +203,22 @@ static metadata() {
         aspectRatio: { x: 16, y: 9 },  // Display aspect ratio. Common: {16,9}, {4,3}, {1,1}.
         thumbnail: 'asset-id-hash',     // Optional asset id used as the catalog thumbnail.
         tickRate: 60,                   // Frames/sec for tick(). Omit if you have no game loop.
+        services: ['multiplayer'],      // Platform capabilities (see below). Omit entirely for
+                                        // a single-player game — that is the common case.
         assets: {                       // Optional. Images/audio/fonts (see §11).
             'potato': new Asset({ id: '48685183f94c7a3c14f315444c6460bd', type: 'image' })
         }
     };
 }
 ```
+
+**`services` — how a game declares what it needs from the platform:**
+
+- **Omit it (or leave out `'multiplayer'`) for single-player games.** The game gets an instant in-browser "Play" button on its homegames.io page (it runs client-side in a local session — no server, no waiting) and can be downloaded as a single offline HTML file.
+- **`'multiplayer'`** — declares a multiplayer game. Its page gets a "Play with friends" flow: the platform spins up a hosted server session and gives the creator a shareable link that friends open to join. Multiplayer games are *also* playable/downloadable locally as a solo session (labeled "Play offline"), so they should still behave sensibly with one player (§14.3).
+- **`'contentGenerator'`** — the game depends on the platform's server-side content-generation service. This **opts the game out of local play and downloads** entirely (the browser can't provide the service). Don't declare it unless the game actually uses it.
+
+**`metadata()` must return an object literal with literal values.** The platform decides a game's play modes (instant play, download eligibility, multiplayer) by **statically parsing the source** — it reads `squishVersion`, `name`, `services`, and `assets` out of the AST without ever executing your code. Computed values (`name: buildName()`, spread objects, `services: SERVICE_LIST`) are invisible to that parser: at best the field is ignored, and if `metadata()` doesn't contain a plain `return { ... }` of literals the game is marked not locally playable at all. Write it as a boring literal.
 
 - The plane is always `0–100`; `aspectRatio` only controls how that square is presented (letterboxing on the client). Build your layout in `0–100` space and pick an aspect ratio that suits it.
 - **Aspect-ratio distortion gotcha:** because the `0–100` square is stretched to fill the aspect rectangle, an x-unit and a y-unit are **not** the same size on screen unless the ratio is `{1,1}`. At `{16,9}` everything is wider than tall — a "square" looks like a rectangle, a `polyCircle` looks like an ellipse, and a 45° heading doesn't look like 45°. For UI/party games this is fine. For **rotation- or distance-based geometry** (twin-stick shooters, anything with circles, orbits, or true angles), prefer **`aspectRatio: { x: 1, y: 1 }`** so the math matches the pixels, or compensate for the ratio in your trig. To draw a **physically square** rect at ratio `{x, y}`, use `height = width * (x / y)` (e.g. at `{16,9}` a `2 × 3.56` rect renders square; at `{9,16}` use `2 × 1.13`).
@@ -1077,7 +1093,7 @@ module.exports = Movers;
 
 ### 14.3 Bots and enemy AI (games must be fun with one player)
 
-A game that needs 2+ players demos badly. The shipped catalog pattern: **bots fill empty slots at match start, and a disconnecting player's avatar is handed to a bot brain** (`agent.playerId = null; agent.isBot = true;`) so rounds never break. Keep entities as plain data (`{ x, y, angle, isBot, ... }`) and run bot logic in `tick()`.
+A game that needs 2+ players demos badly — and on today's platform, **solo is the front door**: the catalog's instant "Play" button and every downloaded game run as a **single-player local session** (one player, id `1`), including for games that declare `multiplayer` (§5). The first experience most people have with any game is alone in their own browser. The shipped catalog pattern: **bots fill empty slots at match start, and a disconnecting player's avatar is handed to a bot brain** (`agent.playerId = null; agent.isBot = true;`) so rounds never break. Keep entities as plain data (`{ x, y, angle, isBot, ... }`) and run bot logic in `tick()`.
 
 > **Last-man-standing logic must special-case solo play.** The naive check `if (alivePlayers.length === 1) declareWinner(...)` ends a single-player session **the instant it starts** — the only player is always the last one alive. Either require ≥2 participants at round start (fill with bots), or in solo sessions switch the win condition to survival time / score and only use "last alive" when the round began with multiple combatants.
 
@@ -1174,6 +1190,9 @@ this.rightStick.node.coordinates2d = thickLine(cx + gap / 2, py, cx + gap / 4, t
 Do:
 - [ ] `module.exports = TheClass;` at the end (export the class, not an instance).
 - [ ] `require('squish-142')` and `squishVersion: '142'` agree.
+- [ ] Keep `metadata()` a pure object literal — the platform statically parses it (no execution) to decide instant play / download / multiplayer (§5).
+- [ ] Declare `services: ['multiplayer']` only for genuinely multiplayer games; omit `services` for single-player (§5).
+- [ ] Make the game work well solo — instant play and downloads always run as a one-player local session, even for multiplayer games (§14.3).
 - [ ] Call `super()` first thing in the constructor.
 - [ ] Build a single root `this.base` shape sized `rectangle(0,0,100,100)`; return it from `getLayers()` as `[{ root: this.base }]`. (For worlds bigger than one screen or per-player cameras, extend `ViewableGame` and render `getViewRoot()` instead — §13.)
 - [ ] Call `onStateChange()` on the root after any direct property mutation (§4) — once per tick, and only when something changed (§4.1).
@@ -1203,7 +1222,10 @@ Don't:
 - [ ] Don't spin up one game instance per player — it's one shared instance; use `playerIds` for per-player views.
 - [ ] Don't tag gameplay entities (ships, avatars, bullets) with `playerIds: [ownerId]` — that's **visibility**, not ownership; every other player stops seeing them (§8). Scope only genuinely private UI.
 - [ ] Don't derive player ids (array index + 1, join order) — use the exact ids the server passes to your handlers (§8).
-- [ ] Don't touch browser globals — no `window`, `document`, `location.reload()`, `alert` — this is Node on a server; a `ReferenceError` crashes the session (§1, §2).
+- [ ] Don't touch browser globals — no `window`, `document`, `location.reload()`, `alert` — hosted sessions run in Node and the local loader doesn't expose them; a `ReferenceError` crashes the session (§1, §2).
+- [ ] Don't try to detect whether the game is running locally or hosted — the contract is identical by design; write one code path (§1).
+- [ ] Don't compute `metadata()` values (`name: fn()`, spreads, variables) — the static parser can't see them and the game loses instant play / download eligibility (§5).
+- [ ] Don't declare `services: ['contentGenerator']` unless the game truly uses it — it removes local play and downloads entirely (§5).
 - [ ] Don't create/remove nodes every tick (particles, trails, recreating a `Text` node to change its string) — pool and mutate instead (§4.1); reassign `node.text` for label updates.
 - [ ] Don't call `onStateChange()` unconditionally every tick — every notify re-squishes and re-broadcasts the whole tree; use a changed flag (§4.1).
 - [ ] Don't spawn "just off-screen" at negative coordinates — they clamp to `0` and the entity sits on the edge; only `100–255` (right/bottom) is really off-screen (§6).
@@ -1227,6 +1249,15 @@ Don't:
 
 ```
 require('squish-142')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, GeometryUtils, Asset, Physics, ... }
+
+Runtime:      one game class (entry index.js; split across as many local files as you like), two homes —
+              hosted Node session (multiplayer) or browser LocalSession (instant play / offline download;
+              exactly one player, id 1, stubbed saveGame/services, frameless). Identical contract —
+              never detect or branch on which.
+metadata():   pure OBJECT LITERAL — statically parsed (never executed) to decide play modes.
+              services: ['multiplayer'] -> "Play with friends" hosted sessions + shareable link;
+              omit services -> single-player instant play + downloadable offline HTML file;
+              'contentGenerator' -> REMOVES local play/downloads (server-only service).
 
 Game hooks:   metadata() [static, required] · constructor()->super() · getLayers()->[{root}]
               handleNewPlayer({playerId,info,settings,clientInfo}) · handlePlayerDisconnect(playerId)
