@@ -12,6 +12,7 @@ Key mental model:
 
 - **You never render or draw.** You build and mutate a tree of nodes (`Shape`, `Text`, `Asset`). The client draws them.
 - **You never write networking.** The server multiplexes all players into one shared game instance. Player input arrives as method calls.
+- **Your code runs in Node on the server, not in a browser.** There is no `window`, `document`, `location`, `alert`, `localStorage`, or DOM. A "play again" button that calls `location.reload()` throws a `ReferenceError` and crashes the session. Restart/replay is always done by **resetting your own state in place** — clear the relevant nodes, reset your variables, rebuild the play field.
 - **The coordinate plane is `0–100` on both axes**, regardless of screen size or aspect ratio. `(0,0)` is top-left, `(100,100)` is bottom-right. Think percentages.
 - **State changes are not automatic.** After you mutate a node, you must signal it (see §4). This is the #1 mistake — read §4 carefully.
 - **The game is shared, not per-player.** One instance serves all players. Per-player visuals are done with `playerIds` (see §8), not separate instances.
@@ -23,7 +24,7 @@ Key mental model:
 The publish pipeline runs an AST scan, then loads and runs your game in a Docker sandbox for ~5 seconds. To pass:
 
 1. **Entry point is `index.js`** and it must `module.exports = YourGameClass;` (a class, not an instance).
-2. **`require` only the SquishJS package and your own local files.** Use `require('squish-142')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, etc.). Do not make network requests, touch the filesystem, spawn processes, or read `process.env`.
+2. **`require` only the SquishJS package and your own local files.** Use `require('squish-142')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, etc.). Do not make network requests, touch the filesystem, spawn processes, or read `process.env`. Browser globals (`window`, `document`, `location`, `navigator`, `alert`) **do not exist** — referencing any of them throws at runtime.
 3. **No dynamic code execution:** no `eval`, no `new Function(...)`, no `require(variable)`.
 4. **`static metadata()` is required** and must return an object whose `squishVersion` matches the package you imported (`'142'` for `squish-142`).
 5. **It must not throw** during `require`, construction, or the first few seconds of ticking. A crash = rejected.
@@ -125,6 +126,63 @@ this.scoreText.node.text = { text: `Score: ${this.score}`, x: 50, y: 10, size: 3
 this.base.node.onStateChange();
 ```
 
+### 4.1 What a notify costs — and the node-pooling rule
+
+Every notify — an explicit `onStateChange()` **or** one fired for you by `addChild`/`removeChild`/`clearChildren` — marks the tree dirty; at the end of the current event-loop turn the server **re-squishes the ENTIRE tree and re-broadcasts it to every player**. Bursts coalesce (mutating 50 nodes in one tick still produces one squish + one broadcast), so you don't pay per call — you pay **per dirty tick, proportional to total node count × players**. Consequences, in order of how badly generated games get them wrong:
+
+1. **Only notify when something actually changed.** An unconditional `this.base.node.onStateChange()` at the bottom of `tick()` re-squishes and re-broadcasts the whole tree `tickRate` times per second even when the game is sitting on a menu. Track a `changed` flag and notify once, only when true (see §14.2).
+
+2. **Pool particle/trail/projectile nodes — never create/remove nodes per tick.** Per-tick `new GameNode.Shape(...)` + `addChild` + later `removeChild` churn (explosions, engine trails, bullets) grows the tree, generates garbage, and — because tree ops each mark the tree dirty — guarantees a full re-squish every single tick. It's also where orphan bugs hide (a node created but never added, or added but never removed on some code path, leaks forever). The correct pattern is a **fixed pool created once in the constructor, mutated in place, hidden when idle**:
+
+```js
+// Constructor: fixed pool, all hidden (zero-size, transparent).
+this.particles = [];
+for (let i = 0; i < 48; i++) {
+    this.particles.push({
+        active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0,
+        node: new GameNode.Shape({
+            shapeType: Shapes.POLYGON,
+            coordinates2d: ShapeUtils.rectangle(0, 0, 0, 0),
+            fill: [0, 0, 0, 0],
+            color: [255, 255, 255, 255]
+        })
+    });
+    this.base.addChild(this.particles[i].node);
+}
+
+// Emit: claim inactive slots (if none are free, just emit fewer — the pool is the budget).
+emitBurst(x, y, fill, count) {
+    for (const p of this.particles) {
+        if (count <= 0) break;
+        if (p.active) continue;
+        count--;
+        p.active = true; p.life = 20; p.x = x; p.y = y;
+        /* set vx/vy */ p.node.node.fill = fill;
+    }
+}
+
+// tick(): mutate in place; on death hide, don't remove. Fade via `color` alpha (§7.4).
+for (const p of this.particles) {
+    if (!p.active) continue;
+    p.x += p.vx; p.y += p.vy; p.life--;
+    if (p.life <= 0) {
+        p.active = false;
+        p.node.node.coordinates2d = ShapeUtils.rectangle(0, 0, 0, 0);
+        p.node.node.fill = [0, 0, 0, 0];
+        continue;
+    }
+    p.node.node.coordinates2d = ShapeUtils.rectangle(p.x, p.y, 0.6, 0.6);
+    p.node.node.color = [255, 255, 255, Math.round(255 * p.life / 20)];
+}
+// ... then ONE onStateChange() for the whole tick.
+```
+
+   The same applies to enemies and pickups in wave games: cap the population, reuse dead slots. `addChild`/`removeChild` is for structural moments (screen transitions, players joining/leaving), not for the per-frame lifecycle of effects.
+
+3. **Update `Text` by reassigning `node.text` — never remove-and-recreate the text node** to change a score/label. Recreation is churn, and it reorders the node's draw position in the tree.
+
+4. **Budget node count and glow.** Total bandwidth ≈ node count × ~55 bytes × tickRate × players — keep the tree in the low hundreds of nodes. And the client renders `effects.shadow` with canvas `shadowBlur`, one of the most expensive canvas operations: glow a **handful of focal nodes** (title, the player's ship, a boss), not every enemy, particle, and pickup, or client framerate dies even when the server is fine.
+
 ---
 
 ## 5. `metadata()` reference
@@ -178,9 +236,13 @@ const h = node.node.coordinates2d[2][1] - y;
 
 > **Precision gotcha:** coordinates are serialized as an integer + a 2-decimal fraction, so the on-screen resolution is **~0.01 units** in `0–100` space. Movement smaller than that per frame rounds away — a `tick()` that adds `0.005` to a position will visually stutter or not move at all. Keep per-frame deltas ≥ ~0.05, or accumulate sub-unit motion in a plain variable and only write the rounded value into `coordinates2d`.
 
+> **Off-plane / negative coordinates:** every coordinate is clamped to `[0, 255]` at serialization. **Negative values pin to `0`** — there is no "just off-screen" above or to the left. An enemy spawned at `y = -2` renders sitting *on* the top edge, not hidden beyond it. Values `100–255` survive, so sliding off the **right/bottom** works. To make something enter from the left or top, spawn it at the edge (`0`) already moving inward, or keep its position in plain variables and only give it a node once it's on the plane.
+
 > **Vertex-count cap:** a node's `coordinates2d` is serialized into a length-limited wire frame — **at most ~126 vertices per node**. Beyond that the frame overflows and the node breaks. For detailed silhouettes (terrain skylines, rings, long strips) budget vertices: e.g. a destructible terrain polygon works at 96 columns (~100 vertices), and a "thick outline" strip that traces a path top-and-bottom doubles its vertex count — sample every other point to stay under the cap. Split very detailed geometry across multiple nodes.
 
 **Colors** are `[r, g, b, a]` arrays, each `0–255`. `a` (alpha) of `0` is fully transparent, `255` fully opaque.
+
+> **Color channels must be integers `0–255` — out-of-range values WRAP, they don't clamp.** Channels are written raw into the frame's byte buffer, so a computed value like `alpha: life * 8` that reaches `400` wraps to `144` mid-fade (the fade visibly flickers back on), and negatives wrap high. Clamp anything you compute: `Math.max(0, Math.min(255, Math.round(v)))`.
 
 ```js
 const { COLORS } = Colors;
@@ -428,6 +490,10 @@ Every node has `playerIds`, an array controlling who sees it. **Get these semant
 - `[42, 99]` → visible to players `42` and `99`.
 - `[0]` → **visible to NOBODY** (player ids start at 1, so scoping to `0` hides the node from everyone). This is the standard trick for hiding a node without removing it — e.g. a JOIN button once everyone has joined.
 
+> **`playerIds` is VISIBILITY, not ownership — do NOT tag gameplay entities with their controller's id.** The most common generated-game bug: giving each player's ship/avatar `playerIds: [playerId]` "because it's theirs". That **hides every ship from every other player** — in multiplayer everyone sees an empty arena with enemies chasing invisible targets. Nodes need no player tag to be controlled by a player; input is already routed per player via the `playerId` argument to `handleKeyDown`/`onClick`. Leave shared-world entities (avatars, ships, bullets, enemies, pickups) **unscoped** (omit `playerIds` entirely), and scope only genuinely private UI: a hand of cards, a personal HUD, a "YOU" marker.
+>
+> Relatedly: **player ids are the numbers the server hands you** in `handleNewPlayer`/input handlers. Never invent or renumber them (e.g. `Object.keys(this.players).indexOf(id) + 1`) — ids are not dense, don't start at your join order, and a derived id scopes the node to the wrong player or to nobody.
+
 Scoping applies to the **whole subtree**: children of a scoped node are only sent to that node's players (a child can narrow the set further with its own `playerIds`, but not widen it). For a scoped button, it's still good practice to set the same `playerIds` on both the shape and its label. Clicks respect scoping too — a node scoped away from a player can't be clicked by them (§9).
 
 This is how you build per-player UI (private hands, individual HUDs, "your turn" prompts) in a single shared game. Helpers on every node:
@@ -610,7 +676,11 @@ constructor({ addAsset }) {
 
 ## 10. Timing and game loop
 
-- Set `metadata().tickRate` (FPS) and implement `tick()` for continuous simulation (movement, physics, timers counting down). Do mutations in `tick()` and end with one `onStateChange()`.
+> **`tick()` starts at construction and never pauses.** The server starts the tick interval the moment your game is instantiated — before any player joins, before any "start" button is pressed, and it keeps firing on menus and game-over screens. Two consequences:
+> 1. **Gate the game loop on a phase.** Without an early `if (this.phase !== 'playing') return;`, enemies spawn, waves advance, and power-ups accumulate behind your start screen.
+> 2. **Never let `tick()` touch a node a later phase creates.** `this.scoreText.node.text = ...` in `tick()` when `scoreText` is only built inside `startGame()` throws `TypeError` on a lobby that sits idle — and a throw in `tick()` crashes the session (auto-reject per §2). Create every node `tick()` references in the constructor, or guard each access.
+
+- Set `metadata().tickRate` (FPS) and implement `tick()` for continuous simulation (movement, physics, timers counting down). Do mutations in `tick()` and end with one `onStateChange()` — **only when something changed** (§4.1).
 - For delayed / repeating logic, **use the tracked timer helpers from the base `Game` class**, not the globals — they are auto-cleared when the session closes, preventing leaks:
 
 ```js
@@ -981,6 +1051,8 @@ module.exports = Movers;
 
 A game that needs 2+ players demos badly. The shipped catalog pattern: **bots fill empty slots at match start, and a disconnecting player's avatar is handed to a bot brain** (`agent.playerId = null; agent.isBot = true;`) so rounds never break. Keep entities as plain data (`{ x, y, angle, isBot, ... }`) and run bot logic in `tick()`.
 
+> **Last-man-standing logic must special-case solo play.** The naive check `if (alivePlayers.length === 1) declareWinner(...)` ends a single-player session **the instant it starts** — the only player is always the last one alive. Either require ≥2 participants at round start (fill with bots), or in solo sessions switch the win condition to survival time / score and only use "last alive" when the round began with multiple combatants.
+
 Two building blocks cover most enemies:
 
 ```js
@@ -1055,7 +1127,11 @@ Do:
 - [ ] `require('squish-142')` and `squishVersion: '142'` agree.
 - [ ] Call `super()` first thing in the constructor.
 - [ ] Build a single root `this.base` shape sized `rectangle(0,0,100,100)`; return it from `getLayers()` as `[{ root: this.base }]`. (For worlds bigger than one screen or per-player cameras, extend `ViewableGame` and render `getViewRoot()` instead — §13.)
-- [ ] Call `onStateChange()` on the root after any direct property mutation (§4).
+- [ ] Call `onStateChange()` on the root after any direct property mutation (§4) — once per tick, and only when something changed (§4.1).
+- [ ] Gate `tick()` on a game phase, and create every node `tick()` touches in the constructor (§10) — it starts firing at construction, before anyone joins or presses start.
+- [ ] Pre-allocate pools for particles/trails/projectiles and mutate them in place; hide dead ones with zero-size + transparent fill (§4.1).
+- [ ] Restart / "play again" by resetting your own state and nodes in place — the game runs in Node on the server; there is no page to reload (§1).
+- [ ] Clamp every computed color channel to an integer `0–255` — out-of-range wraps, it doesn't clamp (§6).
 - [ ] Use `this.setTimeout` / `this.setInterval` (tracked) for timers.
 - [ ] Clean up a leaving player's nodes in `handlePlayerDisconnect`.
 - [ ] Size click/tap targets generously and support tap-first or both arrows+WASD.
@@ -1072,6 +1148,14 @@ Don't:
 - [ ] Don't expect circles/true angles at non-`{1,1}` aspect ratios — the plane is stretched; use `{x:1,y:1}` for geometry (§5).
 - [ ] Don't `require` Node built-ins, hit the network/filesystem, read `process.env`, or use `eval`/`new Function`.
 - [ ] Don't spin up one game instance per player — it's one shared instance; use `playerIds` for per-player views.
+- [ ] Don't tag gameplay entities (ships, avatars, bullets) with `playerIds: [ownerId]` — that's **visibility**, not ownership; every other player stops seeing them (§8). Scope only genuinely private UI.
+- [ ] Don't derive player ids (array index + 1, join order) — use the exact ids the server passes to your handlers (§8).
+- [ ] Don't touch browser globals — no `window`, `document`, `location.reload()`, `alert` — this is Node on a server; a `ReferenceError` crashes the session (§1, §2).
+- [ ] Don't create/remove nodes every tick (particles, trails, recreating a `Text` node to change its string) — pool and mutate instead (§4.1); reassign `node.text` for label updates.
+- [ ] Don't call `onStateChange()` unconditionally every tick — every notify re-squishes and re-broadcasts the whole tree; use a changed flag (§4.1).
+- [ ] Don't spawn "just off-screen" at negative coordinates — they clamp to `0` and the entity sits on the edge; only `100–255` (right/bottom) is really off-screen (§6).
+- [ ] Don't put `effects` glow on every entity — canvas `shadowBlur` is expensive client-side; glow a handful of focal nodes (§4.1).
+- [ ] Don't end a last-man-standing round when only one player ever joined — require ≥2 at round start or use bots (§14.3).
 - [ ] Don't invent asset ids. If you have none, draw with shapes and text instead of `Asset` nodes.
 - [ ] Don't use coordinates outside `0–100` expecting them to be visible.
 - [ ] Don't give a single node more than ~126 vertices — the wire frame overflows (§6).
@@ -1107,10 +1191,21 @@ Button:       no button node + Text isn't clickable -> clickable Shape (onClick)
 Tree ops:     n.addChild(c) · n.addChildren(a,b) · n.removeChild(id) · n.clearChildren([keepIds])
               n.findChild(id) · n.update({fill,coordinates2d}) · n.showFor(pid) · n.hideFor(pid)
 NOTIFY:       n.node.onStateChange()   // after direct field mutation; tree ops notify for you
+Cost:         every notify re-squishes + re-broadcasts the WHOLE tree to every player (bursts coalesce
+              into one flush per turn) -> notify once per tick, ONLY when changed; POOL particle/trail/
+              bullet nodes (create once in constructor, mutate, hide with zero-size + fill [0,0,0,0]) —
+              never addChild/removeChild per tick; glow a few focal nodes only (shadowBlur is expensive) (§4.1)
+Env:          Node on the server — NO window/document/location/alert; "play again" = reset state in place,
+              never location.reload() (§1)
+tick():       starts at construction, fires on menus too -> gate on phase; create every node tick()
+              touches in the constructor (a throw in tick = crashed session = rejected) (§10)
 
 Shapes:       Shapes.POLYGON | LINE   (CIRCLE constant exists but does NOT render — don't use)
 Coords:       ShapeUtils.rectangle(x,y,w,h) · ShapeUtils.triangle(x1,y1,x2,y2,x3,y3) · plane is 0..100
 Colors:       Colors.COLORS.RED ... ([r,g,b,a] 0..255) · Colors.randomColor(['BLACK',...])  // exclude by NAME, not value
+              channels are raw bytes: out-of-range WRAPS (alpha 400 -> 144) -> clamp computed values (§6)
+Off-plane:    coords clamp to [0,255] on the wire — negatives pin to 0 (no off-screen left/top);
+              100..255 = off right/bottom; enter from left/top by spawning AT the edge moving inward (§6)
 Aspect:       plane is 0..100 but stretched to aspectRatio -> use {1,1} for circles/orbits/true angles (§5)
               text height in y-units = size * (aspectX/aspectY); square rect: h = w * (x/y) (§5)
 Hide a node:  playerIds = [0] (nobody) or fill [0,0,0,0]
@@ -1125,8 +1220,13 @@ Live typing:  held keys re-send keydown every ~33ms with NO delay -> gate them l
               fresh press (not seen >400ms) types instantly; held repeats after 450ms at ~18cps (§9 Keyboard)
 hover:        Shape/Asset onHover(pid) / offHover(pid)   // cosmetic only; no hover on touch
 playerIds:    [] / omitted = everyone (default) · [id,...] = only those · [0] = NOBODY (hide)
+              VISIBILITY, not ownership: leave avatars/ships/bullets UNSCOPED or other players can't
+              see them; input already routes per player via handler args; never derive ids from indices (§8)
               scoping covers the subtree; players with NO scoped nodes get the UNFILTERED state ->
               secrets games: per-player zero-size privacy anchor + scoped "YOU" markers (§8)
+
+Rounds:       last-man-standing must special-case solo (1 player alive at spawn != winner) — require >=2
+              at round start or fill with bots (§14.3)
 
 Bots:         fill empty slots at match start; hand disconnected players' avatars to a bot brain (§14.3)
               fair combat bots: acquire (LOS + range + own cooldown) -> TELEGRAPH 0.5-1s (stop, turn toward
