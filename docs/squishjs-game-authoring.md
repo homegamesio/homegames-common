@@ -27,7 +27,7 @@ The publish pipeline runs an AST scan, then loads and runs your game in a Docker
 2. **`require` only the SquishJS package and your own local files.** Use `require('squish-142')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, etc.). Do not make network requests, touch the filesystem, spawn processes, or read `process.env`. Browser globals (`window`, `document`, `location`, `navigator`, `alert`) **do not exist** — referencing any of them throws at runtime.
 3. **No dynamic code execution:** no `eval`, no `new Function(...)`, no `require(variable)`.
 4. **`static metadata()` is required** and must return an object whose `squishVersion` matches the package you imported (`'142'` for `squish-142`).
-5. **It must not throw** during `require`, construction, or the first few seconds of ticking. A crash = rejected.
+5. **It must not throw** during `require`, construction, or the first few seconds of ticking. A crash = rejected. But note the sandbox's blind spot: **it never presses a key or clicks anything**, so code behind input handlers, `onClick`s, and phase gates (`if (!this.gameStarted) return;`) runs zero times during validation. A `ReferenceError` there sails through and crashes the game mid-session, the first time a real player triggers it. §15.1 tells you how to write that code so a typo can't hide in it.
 6. **Size limits:** total game ≤ 20 MB, any single file ≤ 5 MB. Keep assets external (referenced by id), not inlined.
 7. **License:** published games are GPLv3. A `LICENSE` file is required at publish time (not your concern when generating the game code itself, but don't add a conflicting license header).
 
@@ -255,7 +255,24 @@ Colors.randomColor(['BLACK', 'WHITE', 'ALMOST_BLACK']); // random, excluding by 
 
 > **`randomColor` excludes by color NAME (string), not by value.** The exclusion list is matched against palette key names like `'BLACK'`/`'HG_BLUE'`, **not** color arrays — `Colors.randomColor([COLORS.BLACK])` silently excludes nothing (you passed an array, not the name). To keep, say, ships off a dark background, pass the names: `Colors.randomColor(['BLACK','ALMOST_BLACK','HG_BLACK','CHARCOAL'])`.
 
-There is a large named palette (e.g. `BLACK, WHITE, RED, GREEN, BLUE, GOLD, EMERALD, CORAL, TEAL, PURPLE, HG_BLUE, HG_RED, HG_YELLOW, CANDY_RED, CANDY_PINK, SKY_BLUE, ...`). When unsure, use a named color or an explicit `[r,g,b,a]` array.
+The complete named palette — these are the ONLY valid `COLORS.*` names:
+
+```
+ALMOST_BLACK, ALMOST_WHITE, ANTIQUE_WHITE, AQUA, AQUAMARINE, BEIGE, BIG_GRAY, BLACK, BLAY, BLUE,
+BLUE_WHISPER, BLEEN, BLOOD, BOOGER, BRIGHT_GRAY, BRONZE, BROWN, CANDY_GREEN, CANDY_PINK, CANDY_RED,
+CHARCOAL, CALM_BLUE, COOL_BLUE, COOL_GREEN, CORAL, CORPORATE_BEIGE, CREAM, CREAMSICLE, CYAN,
+DARK_TURQUOISE, DEEP_BLUE, DEEP_PURPLE, DEEP_RED, DIM_GRAY, DULL_BLUE, EMERALD, EVERGREEN,
+FRIENDLY_BLUE, FUCHSIA, FUNNY_PURPLE, GOLD, GOLDMEMBER, GRAY, GREEN, GUN_METAL_GRAY, HARD_ORANGE_RED,
+HARD_PINK, HG_BLACK, HG_BLUE, HG_RED, HG_YELLOW, INTERIOR_RED, INVITATION_BLUE, KHAKI, LAVENDER,
+LIGHT_CORAL, LIGHT_SEA_GREEN, NAVY, MAGENTA, MAROON, MEAN_SEA, MERLOT, MINT, MUSTARD, NEON_BOOGER,
+NEON_PINK, ORANGE, ORANGE_RED, PALE_TURQUOISE, PEACH, PERFUME_PINK, PERRYWINKLE, PINK, POWDER_BLUE,
+PURPLE, REAL_ESTATE_BLUE, RED, RUST, SALMON, SEA_GREEN, SHARP_YELLOW, SILVER, SIMPLE_GRAY,
+SLEEPY_PINK, SMOKE, SMOOTH_BLUE, SOFT_GREEN, SOFT_MINT, SOFT_PINK, STRESSED_PURPLE, SKY_BLUE,
+STANDARD_GRAY, STORM_GRAY, SUCCESS_GREEN, TEAL, TENSE_SKY, TERRACOTTA, THICK_LUXURY, TURQUOISE,
+WALLPAPER_BEIGE, WALLPAPER_GREEN, WHITE, YELLOW
+```
+
+> **An invented color name fails SILENTLY as an invisible shape.** `COLORS.CHOCOLATE` or `COLORS.DARK_SAGE` isn't an error — it's `undefined`, and undefined fields are skipped at serialization, so the node renders with **no fill at all**. A "background that doesn't show up" or "shape that never appears" is very often a made-up palette name. If the exact color you want isn't in the list above, use an explicit `[r,g,b,a]` array (e.g. chocolate ≈ `[123, 63, 0, 255]`).
 
 ---
 
@@ -300,7 +317,16 @@ const facing = (x, y, angle, size) => ShapeUtils.triangle(
     x + Math.cos(angle + 2.6) * size,  y + Math.sin(angle + 2.6) * size,
     x + Math.cos(angle - 2.6) * size,  y + Math.sin(angle - 2.6) * size,
 );
+// A thick line / "stick" from (x1,y1) to (x2,y2) as a 4-corner polygon
+// (paddles, chopsticks, laser beams, limbs — anything long and rotatable):
+const thickLine = (x1, y1, x2, y2, width) => {
+    const a = Math.atan2(y2 - y1, x2 - x1);
+    const dx = Math.sin(a) * width / 2, dy = Math.cos(a) * width / 2;
+    return [[x1 - dx, y1 + dy], [x2 - dx, y2 + dy], [x2 + dx, y2 - dy], [x1 + dx, y1 - dy], [x1 - dx, y1 + dy]];
+};
 ```
+
+> When a game has **mirrored geometry** (a left and a right of anything), compute it with ONE helper like the above called twice with mirrored arguments — never as two copy-pasted trig blocks. See §15.1 for why this rule exists.
 
 - Transparent fill `[0,0,0,0]` + an `onClick` makes an invisible hit-box / button overlay (but see §9's hit-test rules — an invisible node still swallows clicks for things drawn beneath it). To **temporarily hide a node without removing it**, either set `fill` to `[0,0,0,0]` or set `playerIds = [0]` (visible to nobody — see §8); restore later.
 - A `Shape` can also carry an `input` field (to act as an on-screen text box) and `onHover`/`offHover` callbacks — see §9.
@@ -321,6 +347,8 @@ const label = new GameNode.Text({
 ```
 
 Note the field is `textInfo` in the constructor, but it is stored on the node as `node.text` (so you update it via `label.node.text = {...}`, see §4).
+
+> **No newlines, no wrapping.** The client draws each `Text` node with a single canvas `fillText` call: a `'\n'` in the string does NOT line-break (the whole thing renders as one line), and long text never wraps on its own. For multi-line text (instructions, "GAME OVER\nFinal Score" screens), create **one `Text` node per line** and space them vertically — line height in y-units is `size * (aspectX / aspectY)` (§5), so at `{16,9}` size-2.5 lines sit nicely ~5 y-units apart.
 
 > **Text nodes are NOT clickable.** Unlike `Shape` and `Asset`, the `Text` constructor only accepts `{ textInfo, playerIds, input, node, id }` — there is **no `onClick`, `onHover`, or `offHover`**. Passing an `onClick` to a `Text` node does nothing; it is silently dropped and the text will never respond to taps. **To make a clickable text label / "button", put the click handler on a `Shape` and render the `Text` on top of it** — see §7.2.1.
 
@@ -1122,6 +1150,27 @@ for (let col = 0; col < COLS; col++) {
 
 ## 15. Idioms and anti-patterns (checklist before you output)
 
+### 15.1 Write code where a typo can't hide
+
+The validation sandbox runs your game for a few seconds but **never presses a key or clicks a button** (§2). Any code that only runs after input — key handlers, `onClick`s, everything behind a `gameStarted`/phase gate — ships unexecuted. When a generated game crashes in production, it is nearly always a `ReferenceError` in exactly that code, and nearly always from the same cause: **two near-identical copy-pasted blocks with a fleet of similar positional locals** (`leftPivotX`, `pivotY`, `leftTipX`, `leftTipY`, `leftX1`, `leftY2`, `rightX1`, ...) where one block references a name that was never defined (`leftPivotY` in a scope that only has `pivotY`). The variable soup makes the typo invisible to a re-read, and the input gate makes it invisible to the sandbox. Three rules:
+
+1. **Mirrored or repeated geometry comes from ONE helper called N times — never from duplicated blocks.** Left/right chopsticks, two paddles, four walls, per-player HUDs: write the math once (like `thickLine` in §7.1), call it with mirrored arguments. Fewer variable names means fewer chances to typo one, and the single implementation gets exercised on every path instead of hiding a broken copy.
+
+```js
+// GOOD — one implementation, two calls:
+this.leftStick.node.coordinates2d  = thickLine(cx - gap / 2, py, cx - gap / 4, ty, 1.5);
+this.rightStick.node.coordinates2d = thickLine(cx + gap / 2, py, cx + gap / 4, ty, 1.5);
+
+// BAD — 20 lines of trig duplicated for "left" and "right" with 16 similar
+// local names; this is where `leftPivotY` (undefined) slips in unnoticed.
+```
+
+2. **Initialize every field you'll later test, at creation time.** `if (obj.captured === false)` is never true when `captured` was never assigned — `undefined === false` is `false`, so the mechanic silently never fires. Set `captured: false` in the object literal when you create the entity, and prefer truthiness checks (`if (!obj.captured)`), which treat "unset" and "false" the same.
+
+3. **Before you output, execute every gated method in your head once.** For each key handler, `onClick`, and phase-gated branch: read every identifier and confirm it is defined in that scope, and confirm every `this.foo` was assigned in the constructor. This five-second pass is the test the sandbox cannot run for you.
+
+### 15.2 The checklist
+
 Do:
 - [ ] `module.exports = TheClass;` at the end (export the class, not an instance).
 - [ ] `require('squish-142')` and `squishVersion: '142'` agree.
@@ -1132,6 +1181,8 @@ Do:
 - [ ] Pre-allocate pools for particles/trails/projectiles and mutate them in place; hide dead ones with zero-size + transparent fill (§4.1).
 - [ ] Restart / "play again" by resetting your own state and nodes in place — the game runs in Node on the server; there is no page to reload (§1).
 - [ ] Clamp every computed color channel to an integer `0–255` — out-of-range wraps, it doesn't clamp (§6).
+- [ ] Write mirrored/repeated geometry as one helper called N times, and mentally execute every input-gated method before output — the sandbox never presses keys, so typos there ship (§15.1).
+- [ ] Initialize every entity field you'll later test (`captured: false` at creation) and prefer truthy checks over `=== false` (§15.1).
 - [ ] Use `this.setTimeout` / `this.setInterval` (tracked) for timers.
 - [ ] Clean up a leaving player's nodes in `handlePlayerDisconnect`.
 - [ ] Size click/tap targets generously and support tap-first or both arrows+WASD.
@@ -1143,6 +1194,8 @@ Do:
 Don't:
 - [ ] Don't forget `onStateChange()` — mutating `coordinates2d`/`fill`/`text` without it shows nothing.
 - [ ] Don't put `onClick` on a `Text` node — it's silently ignored. Build buttons as a clickable `Shape` with a `Text` on top (§7.2.1).
+- [ ] Don't put `'\n'` in a `Text` node — it renders as ONE line; make one `Text` node per line (§7.2).
+- [ ] Don't invent `COLORS.*` names — a name outside the §6 list is `undefined` and the shape silently renders with no fill (invisible). Use the list or an explicit `[r,g,b,a]`.
 - [ ] Don't pass `border` as an object — it's a **number** (outline width), and you must also set `color` for the stroke (§7.1).
 - [ ] Don't pass color **arrays** to `Colors.randomColor()` — it excludes by **name** strings (§6).
 - [ ] Don't expect circles/true angles at non-`{1,1}` aspect ratios — the plane is stretched; use `{x:1,y:1}` for geometry (§5).
@@ -1204,6 +1257,10 @@ Shapes:       Shapes.POLYGON | LINE   (CIRCLE constant exists but does NOT rende
 Coords:       ShapeUtils.rectangle(x,y,w,h) · ShapeUtils.triangle(x1,y1,x2,y2,x3,y3) · plane is 0..100
 Colors:       Colors.COLORS.RED ... ([r,g,b,a] 0..255) · Colors.randomColor(['BLACK',...])  // exclude by NAME, not value
               channels are raw bytes: out-of-range WRAPS (alpha 400 -> 144) -> clamp computed values (§6)
+              ONLY the ~100 names listed in §6 exist — an invented name = undefined = invisible shape (no error)
+Text limits:  '\n' does NOT line-break (single fillText call) -> one Text node per line (§7.2)
+Typo safety:  sandbox never presses keys/clicks -> mirrored geometry = ONE helper called twice (thickLine, §7.1);
+              init fields you'll test (captured: false); hand-trace every gated handler before output (§15.1)
 Off-plane:    coords clamp to [0,255] on the wire — negatives pin to 0 (no off-screen left/top);
               100..255 = off right/bottom; enter from left/top by spawning AT the edge moving inward (§6)
 Aspect:       plane is 0..100 but stretched to aspectRatio -> use {1,1} for circles/orbits/true angles (§5)
