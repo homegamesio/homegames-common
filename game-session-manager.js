@@ -269,6 +269,14 @@ class GameSessionManager {
             || require('./index').getConfigValue('HOMENAMES_PORT', 7100);
         extraEnv.HOMENAMES_PORT = String(homenamesPort);
 
+        // Pass the shared secret so the container's secret-gated /control
+        // endpoint (runtime persistence toggle) can authenticate the manager.
+        // Only set when configured — absent means control is disabled.
+        const controlSecret = require('./index').getConfigValue('HOMENAMES_API_SECRET', '');
+        if (controlSecret) {
+            extraEnv.HOMENAMES_API_SECRET = String(controlSecret);
+        }
+
         const { containerId } = await runGameContainer({
             codePath,
             port,
@@ -291,6 +299,7 @@ class GameSessionManager {
             squishVersion,
             cleanup: cleanupFn,
             _emptyTicks: 0,
+            persistent: false,
         };
 
         this.sessions[sessionId] = session;
@@ -434,6 +443,7 @@ class GameSessionManager {
                 gameKey: input.gameKey || null,
                 gamePath,
                 _emptyTicks: 0,
+                persistent: false,
                 requestCallbacks: {},
                 _requestIdCounter: 0,
             };
@@ -596,6 +606,12 @@ class GameSessionManager {
                     return;
                 }
 
+                // Admin-pinned sessions never get torn down for being empty.
+                if (s.persistent) {
+                    s._emptyTicks = 0;
+                    return;
+                }
+
                 // Check player count — stop container if empty past grace period
                 try {
                     const healthData = await this._querySessionHealth(s.port);
@@ -722,7 +738,71 @@ class GameSessionManager {
             squishVersion: s.squishVersion,
             gameKey: s.gameKey || null,
             gameId: s.gameId || null,
+            persistent: !!s.persistent,
         }));
+    }
+
+    /**
+     * Pin or unpin a session so it survives (or resumes) empty-session teardown.
+     * Updates the manager's own record (which gates the docker lifecycle monitor)
+     * and pushes the flag to the child that runs checkPulse: IPC for fork
+     * sessions, a secret-gated HTTP POST for docker sessions. Resolves to the
+     * new value, or rejects if the session is unknown or the push fails.
+     */
+    setSessionPersistent(sessionId, value) {
+        const session = this.sessions[sessionId];
+        if (!session) return Promise.reject(new Error('Session not found'));
+
+        const next = !!value;
+        session.persistent = next;
+
+        if (session.type === 'fork') {
+            try {
+                session.child.send(JSON.stringify({ type: 'setPersistent', value: next }));
+            } catch (err) {
+                return Promise.reject(err);
+            }
+            return Promise.resolve(next);
+        }
+
+        if (session.type === 'docker') {
+            return new Promise((resolve, reject) => {
+                const secret = require('./index').getConfigValue('HOMENAMES_API_SECRET', '');
+                if (!secret) {
+                    // No secret configured: the docker /control endpoint is
+                    // disabled, so we can't reach the child. The manager-side
+                    // flag still gates the lifecycle monitor, but the child's
+                    // own checkPulse would still self-terminate on empty.
+                    reject(new Error('HOMENAMES_API_SECRET not configured; cannot control docker session'));
+                    return;
+                }
+                const mod = this.certPath ? require('https') : http;
+                const protocol = this.certPath ? 'https' : 'http';
+                const payload = JSON.stringify({ persistent: next });
+                const req = mod.request(`${protocol}://localhost:${session.port}/control/persistent`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Content-Length': Buffer.byteLength(payload),
+                        'Authorization': `Bearer ${secret}`,
+                    },
+                    rejectUnauthorized: false,
+                }, (res) => {
+                    let buf = '';
+                    res.on('data', (chunk) => { buf += chunk; });
+                    res.on('end', () => {
+                        if (res.statusCode >= 200 && res.statusCode < 300) resolve(next);
+                        else reject(new Error(`Session control returned ${res.statusCode}`));
+                    });
+                });
+                req.on('error', reject);
+                req.setTimeout(5000, () => { req.destroy(); reject(new Error('Session control timed out')); });
+                req.write(payload);
+                req.end();
+            });
+        }
+
+        return Promise.reject(new Error('Unsupported session type'));
     }
 
     /**
