@@ -79,9 +79,6 @@ class MyGame extends Game {
     // Called every frame if metadata().tickRate is set. Use for game loops/physics.
     tick() {}
 
-    // Gatekeeper for joins. Return false to refuse the player (e.g. game full).
-    canAddPlayer() { return true; }
-
     // Called when the session ends. Base Game.close() clears tracked timers (see §10).
     // Override to also remove nodes, but you usually don't need to.
     close() { super.close?.(); }
@@ -203,6 +200,9 @@ static metadata() {
         aspectRatio: { x: 16, y: 9 },  // Display aspect ratio. Common: {16,9}, {4,3}, {1,1}.
         thumbnail: 'asset-id-hash',     // Optional asset id used as the catalog thumbnail.
         tickRate: 60,                   // Frames/sec for tick(). Omit if you have no game loop.
+        maxPlayers: 8,                  // Optional session capacity (default 64). Joins beyond
+                                        // this are refused by the platform — there is no
+                                        // canAddPlayer() hook; capacity is this field.
         services: ['multiplayer'],      // Platform capabilities (see below). Omit entirely for
                                         // a single-player game — that is the common case.
         assets: {                       // Optional. Images/audio/fonts (see §11).
@@ -222,7 +222,7 @@ static metadata() {
 
 - The plane is always `0–100`; `aspectRatio` only controls how that square is presented (letterboxing on the client). Build your layout in `0–100` space and pick an aspect ratio that suits it.
 - **Aspect-ratio distortion gotcha:** because the `0–100` square is stretched to fill the aspect rectangle, an x-unit and a y-unit are **not** the same size on screen unless the ratio is `{1,1}`. At `{16,9}` everything is wider than tall — a "square" looks like a rectangle, a `polyCircle` looks like an ellipse, and a 45° heading doesn't look like 45°. For UI/party games this is fine. For **rotation- or distance-based geometry** (twin-stick shooters, anything with circles, orbits, or true angles), prefer **`aspectRatio: { x: 1, y: 1 }`** so the math matches the pixels, or compensate for the ratio in your trig. To draw a **physically square** rect at ratio `{x, y}`, use `height = width * (x / y)` (e.g. at `{16,9}` a `2 × 3.56` rect renders square; at `{9,16}` use `2 × 1.13`).
-- **Text size is relative to canvas WIDTH only.** A `size: s` line of text is `s%` of the canvas width tall in pixels — which is `s * (aspectX / aspectY)` **y-units** tall on the plane. At `{1,1}` a size-2 text is ~2 y-units tall; at `{16,9}` it's ~3.6; at `{9,16}` it's ~1.1. Use this to vertically center a label in a box: `textY = boxY + (boxH - size * aspectX / aspectY) / 2`. **Text width is NOT knowable server-side**: each client's canvas resolves `monospace` to its own font, with advance widths anywhere from ~0.6 to ~0.85 of the font size. Budget wide (~`0.85 * size` x-units per character) when sizing boxes/wrapping so wide fonts don't overflow, and never position anything by summing character widths — to place a cursor or caret, embed it in the string itself (a `'▌'` glyph appended to the text lands exactly after the last character on every client; see the Typewriter game).
+- **Text size is relative to canvas WIDTH only.** A `size: s` line of text is `s%` of the canvas width tall in pixels — which is `s * (aspectX / aspectY)` **y-units** tall on the plane. At `{1,1}` a size-2 text is ~2 y-units tall; at `{16,9}` it's ~3.6; at `{9,16}` it's ~1.1. Use this to vertically center a label in a box: `textY = boxY + (boxH - size * aspectX / aspectY) / 2`. **Text width is NOT knowable server-side**: each client's canvas resolves the font (default `sans-serif`) with its own metrics, with advance widths anywhere from ~0.6 to ~0.85 of the font size. Budget wide (~`0.85 * size` x-units per character) when sizing boxes/wrapping so wide fonts don't overflow, and never position anything by summing character widths — to place a cursor or caret, embed it in the string itself (a `'▌'` glyph appended to the text lands exactly after the last character on every client; see the Typewriter game).
 - `tickRate` is frames per second for `tick()`. **Every tick with a state change re-squishes and re-broadcasts the whole tree**, so high rates cost real bandwidth. In practice: **15–30 for action games** (shipped catalog games use 15–20 and feel snappy), **8–15 for casual/UI-driven games**, omit entirely for purely event-driven games (click/turn-based) that update only in handlers. Express all in-game durations as `seconds * TICK_RATE` so pacing tweaks don't silently change timers.
 
 ---
@@ -294,7 +294,7 @@ WALLPAPER_BEIGE, WALLPAPER_GREEN, WHITE, YELLOW
 
 ## 7. Node types
 
-There are exactly three, all created via `GameNode`. All accept an optional numeric `id`, `playerIds`, and (for visible nodes) `onClick`, `onHover`, `offHover`.
+There are exactly three, all created via `GameNode`. All accept an optional numeric `id` and `playerIds`. `Shape` and `Asset` also accept `onClick`, `onHover`, `offHover`; `Text` accepts none of them (see §7.2).
 
 ### 7.1 `GameNode.Shape` — polygons, rectangles, lines
 
@@ -364,6 +364,8 @@ const label = new GameNode.Text({
 
 Note the field is `textInfo` in the constructor, but it is stored on the node as `node.text` (so you update it via `label.node.text = {...}`, see §4).
 
+> **Always set `color` on Text.** Omitting it doesn't default to black — it crashes serialization. Treat `color` as required.
+
 > **No newlines, no wrapping.** The client draws each `Text` node with a single canvas `fillText` call: a `'\n'` in the string does NOT line-break (the whole thing renders as one line), and long text never wraps on its own. For multi-line text (instructions, "GAME OVER\nFinal Score" screens), create **one `Text` node per line** and space them vertically — line height in y-units is `size * (aspectX / aspectY)` (§5), so at `{16,9}` size-2.5 lines sit nicely ~5 y-units apart.
 
 > **Text nodes are NOT clickable.** Unlike `Shape` and `Asset`, the `Text` constructor only accepts `{ textInfo, playerIds, input, node, id }` — there is **no `onClick`, `onHover`, or `offHover`**. Passing an `onClick` to a `Text` node does nothing; it is silently dropped and the text will never respond to taps. **To make a clickable text label / "button", put the click handler on a `Shape` and render the `Text` on top of it** — see §7.2.1.
@@ -414,7 +416,7 @@ Notes:
 
 ```js
 const sprite = new GameNode.Asset({
-    coordinates2d: ShapeUtils.rectangle(25, 25, 50, 50),  // clickable bounds of the node
+    coordinates2d: ShapeUtils.rectangle(30, 35, 40, 30),  // click/tap bounds of the node
     assetInfo: {
         'potato': {                       // KEY must match a key in metadata().assets
             pos:  { x: 30, y: 35 },       // where the image's top-left sits, 0–100 space
@@ -424,6 +426,8 @@ const sprite = new GameNode.Asset({
     playerIds: [0]
 });
 ```
+
+> **The picture and the hit area are independent.** The image is drawn from `assetInfo`'s `pos`/`size`; clicks and hover hit-test against the node's separate `coordinates2d`. Keep them aligned (same x/y/w/h, as above) or the tap target won't match what the player sees.
 
 Audio is also an `Asset` node — give it zero size and a `startTime` (seconds into the clip):
 
@@ -440,6 +444,8 @@ this.setTimeout(() => this.base.removeChild(sound.id), 250);
 ```
 
 The `assetInfo` key (`'potato'`, `'hiss'`) is a **reference to `metadata().assets`** — you do not embed image/audio bytes in the game; you reference them by the asset id declared in metadata.
+
+> **Audio is deduped by asset KEY, not by node.** The client tracks playing sounds per key: two nodes with the same key play one sound, and a sound only restarts after its key has been absent from at least one rendered frame — a remove + re-add in the same tick won't re-trigger it. For rapid re-fire SFX, remove the node and re-add it on a later tick (or after a short `setTimeout`). Also: players who mute sound in their settings simply never receive audio nodes — the platform handles that; games do nothing.
 
 ### 7.3.1 Cropping an image / spritesheets (`squish-140`+)
 
@@ -519,9 +525,7 @@ node.node.color = [r, g, b, Math.round(255 * lifeRemaining / lifeTotal)];
 this.base.node.onStateChange();
 ```
 
-Caveats:
-- The global alpha is only reset by the **next node that has a `color`** — a faded node can "leak" its transparency onto later-drawn shapes that lack one. Rule: **when you fade anything, give every visible `Shape` an explicit `color`** (use `[255,255,255,255]` when you don't need a stroke).
-- Glow persists at full strength while a node fades via `color` alpha; set `effects = null` when starting a fade-out.
+Caveat: glow persists at full strength while a node fades via `color` alpha; set `effects = null` when starting a fade-out.
 
 ---
 
@@ -691,7 +695,7 @@ const searchBox = new GameNode.Shape({
 - `oninput` fires on change; treat `value` as the field's entire current string.
 - This is exactly the mechanism the Homegames dashboard's own search box uses, so it is the same well-trodden path the platform relies on.
 - Scope the field with `playerIds` (§8) so only the intended player sees and edits it — `input` is per node, but visibility still follows `playerIds`.
-- There is also `type: 'file'` for uploads (images and audio). Its handler is `oninput(playerId, bytes, meta)`: `bytes` is a plain array of byte values (0–255), and `meta` is `{ kind, contentType, fileName }` where `kind` is `'image'`, `'audio'`, or `null` (sniffed server-side from the file's magic bytes — trust it over `contentType`, which is client-reported). Uploads are capped at 5 MB. To use an upload, wrap the bytes in an `Asset` typed by `meta.kind` and register it via the `addAsset` constructor option, then reference it from a `GameNode.Asset` as usual (audio plays while its node is in the tree):
+- There is also `type: 'file'` for uploads (images and audio). Its handler is `oninput(playerId, bytes, meta)`: `bytes` is a **`Buffer`** (hosted sessions) or **`Uint8Array`** (local play) — array-like binary data, never a plain JS array — and `meta` is `{ kind, contentType, fileName }` where `kind` is `'image'`, `'audio'`, or `null` (sniffed server-side from the file's magic bytes — trust it over `contentType`, which is client-reported). Uploads are capped at 5 MB by the file picker (the server itself accepts up to 8 MB). To use an upload, wrap the bytes in an `Asset` typed by `meta.kind` and register it via the `addAsset` constructor option, then reference it from a `GameNode.Asset` as usual (audio plays while its node is in the tree):
 
 ```js
 constructor({ addAsset }) {
@@ -715,6 +719,8 @@ constructor({ addAsset }) {
 ### Hover
 
 `Shape` and `Asset` nodes also accept `onHover(playerId)` and `offHover(playerId)` (pointer enter / leave). Use them only for cosmetic affordances — **touch devices have no hover**, so never gate a mechanic on it.
+
+> **Hover only fires on nodes the client considers interactive.** The hover handlers themselves are never sent to the client — it reports hover only for nodes it indexed as clickable (`onClick` present) or as inputs. A node with `onHover` but **no `onClick` and no `input` never receives hover events.** Give hover-only nodes a no-op `onClick: () => {}` to make them hoverable.
 
 ---
 
@@ -1164,7 +1170,7 @@ for (let col = 0; col < COLS; col++) {
 
 ---
 
-## 15. Idioms and anti-patterns (checklist before you output)
+## 15. Idioms and anti-patterns
 
 ### 15.1 Write code where a typo can't hide
 
@@ -1185,64 +1191,6 @@ this.rightStick.node.coordinates2d = thickLine(cx + gap / 2, py, cx + gap / 4, t
 
 3. **Before you output, execute every gated method in your head once.** For each key handler, `onClick`, and phase-gated branch: read every identifier and confirm it is defined in that scope, and confirm every `this.foo` was assigned in the constructor. This five-second pass is the test the sandbox cannot run for you.
 
-### 15.2 The checklist
-
-Do:
-- [ ] `module.exports = TheClass;` at the end (export the class, not an instance).
-- [ ] `require('squish-142')` and `squishVersion: '142'` agree.
-- [ ] Keep `metadata()` a pure object literal — the platform statically parses it (no execution) to decide instant play / download / multiplayer (§5).
-- [ ] Declare `services: ['multiplayer']` only for genuinely multiplayer games; omit `services` for single-player (§5).
-- [ ] Make the game work well solo — instant play and downloads always run as a one-player local session, even for multiplayer games (§14.3).
-- [ ] Call `super()` first thing in the constructor.
-- [ ] Build a single root `this.base` shape sized `rectangle(0,0,100,100)`; return it from `getLayers()` as `[{ root: this.base }]`. (For worlds bigger than one screen or per-player cameras, extend `ViewableGame` and render `getViewRoot()` instead — §13.)
-- [ ] Call `onStateChange()` on the root after any direct property mutation (§4) — once per tick, and only when something changed (§4.1).
-- [ ] Gate `tick()` on a game phase, and create every node `tick()` touches in the constructor (§10) — it starts firing at construction, before anyone joins or presses start.
-- [ ] Pre-allocate pools for particles/trails/projectiles and mutate them in place; hide dead ones with zero-size + transparent fill (§4.1).
-- [ ] Restart / "play again" by resetting your own state and nodes in place — the game runs in Node on the server; there is no page to reload (§1).
-- [ ] Clamp every computed color channel to an integer `0–255` — out-of-range wraps, it doesn't clamp (§6).
-- [ ] Write mirrored/repeated geometry as one helper called N times, and mentally execute every input-gated method before output — the sandbox never presses keys, so typos there ship (§15.1).
-- [ ] Initialize every entity field you'll later test (`captured: false` at creation) and prefer truthy checks over `=== false` (§15.1).
-- [ ] Use `this.setTimeout` / `this.setInterval` (tracked) for timers.
-- [ ] Clean up a leaving player's nodes in `handlePlayerDisconnect`.
-- [ ] Size click/tap targets generously and support tap-first or both arrows+WASD.
-- [ ] Keep everything in `0–100` coordinate space.
-- [ ] Make grouping/"layer" containers **zero-size** (`rectangle(0,0,0,0)`) so they never swallow clicks (§9.1); full-screen tap steering goes on a dedicated tap-catcher above the playfield, below the buttons.
-- [ ] Give every roster/scoreboard a per-player scoped "YOU" marker, and secrets games a per-player privacy anchor (§8) — frameless sessions have no chrome and no guaranteed name.
-- [ ] Give each game a distinct color identity (don't default every game to dark-navy + neon); keep action games at tickRate 15–30.
-
-Don't:
-- [ ] Don't forget `onStateChange()` — mutating `coordinates2d`/`fill`/`text` without it shows nothing.
-- [ ] Don't put `onClick` on a `Text` node — it's silently ignored. Build buttons as a clickable `Shape` with a `Text` on top (§7.2.1).
-- [ ] Don't put `'\n'` in a `Text` node — it renders as ONE line; make one `Text` node per line (§7.2).
-- [ ] Don't invent `COLORS.*` names — a name outside the §6 list is `undefined` and the shape silently renders with no fill (invisible). Use the list or an explicit `[r,g,b,a]`.
-- [ ] Don't pass `border` as an object — it's a **number** (outline width), and you must also set `color` for the stroke (§7.1).
-- [ ] Don't pass color **arrays** to `Colors.randomColor()` — it excludes by **name** strings (§6).
-- [ ] Don't expect circles/true angles at non-`{1,1}` aspect ratios — the plane is stretched; use `{x:1,y:1}` for geometry (§5).
-- [ ] Don't `require` Node built-ins, hit the network/filesystem, read `process.env`, or use `eval`/`new Function`.
-- [ ] Don't spin up one game instance per player — it's one shared instance; use `playerIds` for per-player views.
-- [ ] Don't tag gameplay entities (ships, avatars, bullets) with `playerIds: [ownerId]` — that's **visibility**, not ownership; every other player stops seeing them (§8). Scope only genuinely private UI.
-- [ ] Don't derive player ids (array index + 1, join order) — use the exact ids the server passes to your handlers (§8).
-- [ ] Don't touch browser globals — no `window`, `document`, `location.reload()`, `alert` — hosted sessions run in Node and the local loader doesn't expose them; a `ReferenceError` crashes the session (§1, §2).
-- [ ] Don't try to detect whether the game is running locally or hosted — the contract is identical by design; write one code path (§1).
-- [ ] Don't compute `metadata()` values (`name: fn()`, spreads, variables) — the static parser can't see them and the game loses instant play / download eligibility (§5).
-- [ ] Don't declare `services: ['contentGenerator']` unless the game truly uses it — it removes local play and downloads entirely (§5).
-- [ ] Don't create/remove nodes every tick (particles, trails, recreating a `Text` node to change its string) — pool and mutate instead (§4.1); reassign `node.text` for label updates.
-- [ ] Don't call `onStateChange()` unconditionally every tick — every notify re-squishes and re-broadcasts the whole tree; use a changed flag (§4.1).
-- [ ] Don't spawn "just off-screen" at negative coordinates — they clamp to `0` and the entity sits on the edge; only `100–255` (right/bottom) is really off-screen (§6).
-- [ ] Don't put `effects` glow on every entity — canvas `shadowBlur` is expensive client-side; glow a handful of focal nodes (§4.1).
-- [ ] Don't end a last-man-standing round when only one player ever joined — require ≥2 at round start or use bots (§14.3).
-- [ ] Don't invent asset ids. If you have none, draw with shapes and text instead of `Asset` nodes.
-- [ ] Don't use coordinates outside `0–100` expecting them to be visible.
-- [ ] Don't give a single node more than ~126 vertices — the wire frame overflows (§6).
-- [ ] Don't put full-screen invisible containers above clickable things — the hit-test stops at the topmost containing node and drops the click (§9.1).
-- [ ] Don't animate `fill` alpha to fade a node — it renders opaque for any value ≥ 1; fade via `color` alpha instead, and set an explicit `color` on nodes drawn after faded ones (§7.4).
-- [ ] Don't set `effects = {}` to clear an effect — use `null` (§7.4). Don't put `effects` on `Text` (not supported; use offset-copy glow).
-- [ ] Don't scope with `playerIds: [0]` expecting "everyone" — `[0]` means **nobody**; omit `playerIds` (empty) for everyone (§8).
-- [ ] Don't rely on sub-`0.01` precision — per-frame motion below ~`0.01` units rounds away (§6). Keep deltas ≥ ~0.05 or accumulate off-node.
-- [ ] Don't use the `crop*` asset fields on `squish-142`/`139` — cropping needs `squish-140`+ (§7.3.1); on older versions they're ignored.
-- [ ] Don't block the event loop (no busy loops, no synchronous long work); drive motion from `tick()`.
-- [ ] Don't assume a keyboard exists on mobile — provide on-screen controls if keys are core.
-
 ---
 
 ## 16. Quick reference card
@@ -1258,10 +1206,12 @@ metadata():   pure OBJECT LITERAL — statically parsed (never executed) to deci
               services: ['multiplayer'] -> "Play with friends" hosted sessions + shareable link;
               omit services -> single-player instant play + downloadable offline HTML file;
               'contentGenerator' -> REMOVES local play/downloads (server-only service).
+              maxPlayers: N -> session capacity (default 64); the only capacity mechanism
+              (no canAddPlayer hook is called by the runtime).
 
 Game hooks:   metadata() [static, required] · constructor()->super() · getLayers()->[{root}]
               handleNewPlayer({playerId,info,settings,clientInfo}) · handlePlayerDisconnect(playerId)
-              handleKeyDown(playerId,key) · handleKeyUp(playerId,key) · tick() · canAddPlayer() · close()
+              handleKeyDown(playerId,key) · handleKeyUp(playerId,key) · tick() · close()
 
 Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, onClick, effects, playerIds })  // clickable
               border = NUMBER (outline width), NOT an object; stroke uses `color` -> set both. fill=interior.
@@ -1269,6 +1219,9 @@ Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, on
               max ~126 vertices per node (§6). effects:{shadow:{color,blur}} = glow; clear with null, never {} (§7.4).
               GameNode.Text({ textInfo:{ text,x,y,size,align,color,font }, playerIds })       // NO onClick
               GameNode.Asset({ coordinates2d, assetInfo:{ key:{pos:{x,y},size:{x,y},startTime} }, playerIds })  // clickable
+              image drawn from assetInfo pos/size; clicks hit coordinates2d -> keep them aligned (§7.3)
+              audio = zero-size Asset; add to tree = play, remove = stop; deduped by KEY — the key must
+              leave a frame before it re-triggers (§7.3). never invent asset ids: no assets -> shapes/text.
               Asset crop (squish-140+): assetInfo.key.{cropLeft,cropTop,cropRight,cropBottom} = % inset per edge -> spritesheets (§7.3.1)
 Button:       no button node + Text isn't clickable -> clickable Shape (onClick) with a Text node on top (§7.2.1)
 
@@ -1302,11 +1255,12 @@ onClick:      (playerId, x, y) => {}    // Shape/Asset only
 Click routing: topmost CONTAINING node wins, clickable or not -> containers must be rectangle(0,0,0,0);
               full-screen taps need a tap-catcher above the playfield, below the buttons (§9.1)
 text input:   Shape/Text input:{ type:'text', oninput:(playerId, value)=>{} }  // MODAL prompt; one-shot entry
-file upload:  input:{ type:'file', oninput:(playerId, bytes, meta)=>{} }  // bytes = byte array (<=5MB),
+file upload:  input:{ type:'file', oninput:(playerId, bytes, meta)=>{} }  // bytes = Buffer/Uint8Array (<=5MB),
               meta = { kind:'image'|'audio'|null, contentType, fileName }; register via addAsset (§9)
 Live typing:  held keys re-send keydown every ~33ms with NO delay -> gate them like an OS keyboard:
               fresh press (not seen >400ms) types instantly; held repeats after 450ms at ~18cps (§9 Keyboard)
-hover:        Shape/Asset onHover(pid) / offHover(pid)   // cosmetic only; no hover on touch
+hover:        Shape/Asset onHover(pid) / offHover(pid)   // cosmetic only; no hover on touch;
+              only fires on nodes with onClick or input — hover-only nodes need a no-op onClick (§9)
 playerIds:    [] / omitted = everyone (default) · [id,...] = only those · [0] = NOBODY (hide)
               VISIBILITY, not ownership: leave avatars/ships/bullets UNSCOPED or other players can't
               see them; input already routes per player via handler args; never derive ids from indices (§8)
