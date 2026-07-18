@@ -1281,3 +1281,221 @@ Big worlds:   extend ViewableGame · super(planeSize) · getPlane()/getPlaneSize
               ViewUtils.getView(plane,{x,y,w,h},[pid], translation?, scale?) projects a world slice into 0..100
                 translation={x,y,filter?} scale={x,y} -> inset the projection (static frame + scroll region, §13.1)
 ```
+
+
+
+# SquishJS Field Notes — Addendum to the Game Authoring Reference
+
+Lessons learned building *Lemonade Tycoon: Night of the Lemons* (squish-142, multiplayer,
+per-player cameras, sprite/shape hybrid rendering). Everything below was discovered the hard
+way in a real game and is written to be merged into the main reference.
+
+---
+
+## A1. The dev tuning menu pattern
+
+Centralize every gameplay number in one `TUNING` object at the top of the file, directly
+under the asset registry. Not just "some constants" — every number a designer might want to
+turn: round lengths, HP values, spawn formulas, yields, ranges, economy.
+
+The structure that worked:
+
+```js
+const TUNING = {
+    // master knobs first — the dials you touch most
+    DIFFICULTY: 1.0,
+    NIGHT_SECONDS: 40,
+    TICK: 20,          // MUST match metadata() literal (see A2)
+    MAX_PLAYERS: 4,    // MUST match metadata() literal (see A2)
+
+    // then grouped by system
+    PLAYER:    { hp: 3, speed: 0.95, invulnTicks: 26 },
+    START:     { money: 5, rep: 10, inv: { water: 100, sugar: 50, lemons: 50 } },
+    CUSTOMERS: { base: 8, perDay: 2, min: 6, max: 20 },
+    LEMONS:    { baseHp: 2, spawnCdBase: 70, capBase: 3, /* ... */ }
+};
+```
+
+Three practices make it actually work instead of just looking organized:
+
+**Derive aliases so the game body doesn't change.** `const TICK = TUNING.TICK;` etc. keeps
+a thousand lines of existing code untouched while the numbers move. Retrofitting tuning into
+a finished game is a rename job, not a rewrite.
+
+**Size render pools from tuning values.** If `TUNING.GATHER.wells` says 2 wells, the
+per-player pool must be built with a loop over that same value, not a hand-written array of
+two nodes. Otherwise raising the count crashes the render loop with an out-of-range index.
+Any tunable that controls "how many of X exist" must drive its pool size, or it isn't
+really tunable.
+
+**Separate gameplay dials from memory budgets.** Pool ceilings (`MAX_LEMONS`, `MAX_FX`,
+`MAX_PROJ`) are bandwidth/memory caps, not design knobs. Keep them in the tuning section but
+labeled as hard caps, and have every count formula clamp against them
+(`Math.min(MAX_LEMONS, formula)`). Then a wild difficulty setting degrades gracefully
+instead of overflowing a pool.
+
+Also: **copy config objects, never hand them out.** `this.inv = TUNING.START.inv` aliases
+the config, and the first sale mutates your "constant." Use
+`Object.assign({}, TUNING.START.inv)` everywhere starting state is applied (constructor
+*and* reset paths).
+
+## A2. metadata() duplication: the two-literals rule
+
+The reference already establishes that `metadata()` must be a pure, statically-parsed object
+literal. The practical consequence for a tuning menu: any value needed by both metadata and
+game logic (`tickRate`, `maxPlayers`) **must exist in two places** and cannot be derived.
+`tickRate: TUNING.TICK` breaks the static parser.
+
+The mitigation is loud comments at *both* sites:
+
+```js
+TICK: 20,   // tickRate - MUST match the tickRate literal in metadata()
+// ... and in metadata():
+tickRate: 20,   // keep in sync with TUNING.TICK (this must stay a literal)
+```
+
+It's ugly, it's the only option, and one-sided comments get missed — comment both ends.
+
+## A3. If the runtime doesn't call it, it doesn't exist
+
+Two plausible-looking methods shipped in the game and were pure dead code:
+
+- `canAddPlayer()` — looks like a join gate; the runtime never calls it. Player capacity is
+  `maxPlayers` in metadata, full stop.
+- `getAssets()` — looks like an asset provider; assets are read only from the metadata
+  literal.
+
+The general lesson: SquishJS has no duck-typed lifecycle. A method the runtime doesn't
+document calling will sit there silently looking load-bearing. This is worse than an error
+— the game runs, reviewers see the "gate," and everyone assumes it works. When a behavior
+must exist, verify the mechanism is one the reference names (`tick`, `handleNewPlayer`,
+`handlePlayerDisconnect`, `handleKeyDown/Up`, node `onClick`), and delete anything else so
+it can't mislead.
+
+## A4. Edge entrances: hide until fully on-plane
+
+Negative coordinates pin to 0 rather than going off-screen, so any entity that "walks in
+from the left" (or top) will smear along the edge during its entrance if you draw it at its
+logical position. The pattern:
+
+1. Keep logical position in plain variables — negative values are fine there
+   (`r.x = -4 - i * 7` staggers a crowd correctly).
+2. Only draw once the entity is far enough in that its *entire* rendered box is on-plane:
+   the threshold is the sprite's half-width, not zero.
+
+```js
+if (!r.active || r.x < 4) { this.hideSprite(n); continue; }   // 8-wide sprite → gate at 4
+```
+
+Audit every spawn-at-edge and walk-on entrance for this; the bug is invisible in code review
+because the movement math is correct — only the draw is wrong.
+
+## A5. Fades run through `color` alpha, not `fill` alpha
+
+The reference notes fill alpha is effectively binary on the client. The working recipe for a
+pooled fade effect (hit splash, ring, flash):
+
+```js
+// creation: fill fully opaque, color channel carries the translucency
+mk([255, 230, 80, 255], { color: [255, 255, 255, 210] })
+
+// per-tick fade:
+const k = f.ttl / f.max;                                  // 1 → 0
+node.fill  = [f.color[0], f.color[1], f.color[2], 255];   // solid
+node.color = [255, 255, 255, Math.round(210 * k)];        // the actual fade
+```
+
+Setting `color` on a shape without a `border` is legal and does nothing except drive alpha
+— that's the whole trick. Anything created with a translucent-looking fill like
+`[r, g, b, 110]` and never fixed will render fully opaque and look like a paint blob.
+
+## A6. Phase guards between subsystems inside tick()
+
+Any damage call can end the phase mid-tick: a spitter projectile downs the last player, a
+brute finishes the stand, and suddenly `gameOver()` has run and torn down night state while
+the rest of `nightTick()` is still executing against it. Guard between subsystems:
+
+```js
+this.updateLemons();
+if (this.phase !== 'night') return;
+this.updatePlayers();
+if (this.phase !== 'night') return;
+this.updateTurrets();
+this.updateEProj();
+if (this.phase !== 'night') return;   // spit damage may have wiped the crew
+```
+
+The rule: after any update that can call into `damagePlayer` / `damageStructure` /
+`gameOver` — directly or transitively — re-check the phase before touching more state. Same
+applies *inside* loops that deal damage to multiple targets (bail out of the projectile loop
+if the phase flipped).
+
+## A7. Sprite-with-shape-fallback, refined
+
+The hybrid system (real art when an asset ID is registered, colored placeholder shapes
+otherwise) proved worth its weight. The refinements that mattered:
+
+**Group all-or-nothing asset sets.** If a node swaps between asset keys at runtime (four
+lemon breeds on one pooled node, three weapon icons), the sprite path activates only when
+*every* key in the group is registered. Otherwise a key swap points at a missing asset
+mid-game. One readiness check per group (`lemonSpritesReady()`), passed into `mkSprite` as
+an override.
+
+**Route every placement through one method.** All sprite positioning goes through a single
+`placeSprite(node, key, x, y, w, h)` that writes both `coordinates2d` and the `asset` field.
+If the renderer's placement field is ever named differently across squish versions, the fix
+is one method, not a hundred call sites.
+
+**Fallback shapes and sprites need different state signaling.** Shapes can tint (windup =
+red flash, drained well = gray); sprites can't. Give sprites a parallel channel: windup =
+25% size puff, broken fence = shrunken posts, invulnerability = blink the sprite on/off,
+damaged stand = rely on the impact splash + floating number instead of a tint. Design the
+signal per mode at the call site — a tint-only telegraph silently disappears the day real
+art lands, which is exactly when nobody is retesting the telegraphs.
+
+**Placeholder chrome must self-hide.** Labels and signs that exist to decorate a fallback
+shape ("LEMONADE" text on the placeholder stand) need `if (node._sprite)` guards so they
+vanish when art arrives.
+
+## A8. Small but real
+
+**Purchase buttons advertise the next state, not the current one.** A "TURRET 2/4" label
+after buying two turrets reads as "buy turret #2" — off-by-one against what the vote/confirm
+flow will actually purchase. Label with `(count + 1)`. Applies to any incremental upgrade
+button.
+
+**A master difficulty knob should scale quantities, not behavior.** `DIFFICULTY` multiplies
+lemon HP, the on-screen cap, and spawn tempo — and deliberately does *not* touch movement
+speed or AI ranges. Scaling speed changes what the enemies *are* (a 1.5× jumper is
+undodgeable; kiting distances break); scaling counts and toughness changes how *hard* they
+are while every breed stays readable. Tempo knobs divide cooldowns; quantity knobs multiply
+counts and get clamped by pool caps; the result gets `Math.round` + a floor of 1 so
+fractional multipliers can't produce 0-HP enemies or 0-tick cooldowns.
+
+**Re-vote on state change.** Any voted action (recipe confirm, shop purchase) must reset its
+votes when the thing being voted on changes — switching the proposal, adjusting the recipe,
+or a voter disconnecting (recount against the new majority threshold, and re-check whether
+the vote now passes).
+
+---
+
+## Updated pre-ship checklist (delta)
+
+In addition to the main reference's checklist:
+
+1. Every gameplay number lives in `TUNING`; grep for stray magic numbers in the game body.
+2. `tickRate` and `maxPlayers`: literals in `metadata()`, mirrored in `TUNING`, comments at
+   both ends.
+3. Any tunable count sizes its own render pool; all count formulas clamp to pool caps.
+4. Starting-state objects are copied (`Object.assign`), never referenced, in constructor
+   *and* reset.
+5. No undocumented lifecycle methods (`canAddPlayer`, `getAssets`, or anything else the
+   runtime never calls) left in the file.
+6. Every edge-entrance entity hides until its full sprite box is on-plane.
+7. Every fade/translucency runs through `color` alpha; no fill created with alpha < 255
+   expecting transparency.
+8. Phase re-checked after every subsystem in `tick()` that can deal damage or end the game.
+9. Grouped sprite sets activate all-or-nothing; every sprite state signal (windup, damage,
+   i-frames) has a non-tint equivalent; placeholder chrome self-hides when art is present.
+10. Upgrade buttons label the *next* purchase; votes reset on proposal/recipe change and
+    recount on disconnect.

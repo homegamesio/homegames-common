@@ -300,6 +300,7 @@ class GameSessionManager {
             cleanup: cleanupFn,
             _emptyTicks: 0,
             persistent: false,
+            private: !!input.private,
         };
 
         this.sessions[sessionId] = session;
@@ -444,6 +445,7 @@ class GameSessionManager {
                 gamePath,
                 _emptyTicks: 0,
                 persistent: false,
+                private: !!input.private,
                 requestCallbacks: {},
                 _requestIdCounter: 0,
             };
@@ -739,6 +741,7 @@ class GameSessionManager {
             gameKey: s.gameKey || null,
             gameId: s.gameId || null,
             persistent: !!s.persistent,
+            private: !!s.private,
         }));
     }
 
