@@ -111,6 +111,11 @@ class GameSession {
         this.remotePlayerMap = {};
         this.stateHistory = [];
 
+        // Active press per player (click-and-drag support): which node the
+        // press started on and the last known pointer position. Set on click,
+        // updated by mousemove, cleared by mouseup / disconnect / node removal.
+        this._activePresses = {};
+
         // Optional subsystems
         this.spectatorsEnabled = !!opts.spectators;
         this.homenames = opts.homenames || null;
@@ -166,6 +171,12 @@ class GameSession {
                     if (extraInfo.playerInfo) this.playerInfoMap[playerId] = extraInfo.playerInfo;
                     if (extraInfo.playerSettings) this.playerSettingsMap[playerId] = extraInfo.playerSettings;
                     if (extraInfo.clientInfo) this.clientInfoMap[playerId] = extraInfo.clientInfo;
+                }
+
+                // Homenames may be unreachable (or have no record yet) — never
+                // hand the game a nameless player.
+                if (!this.playerInfoMap[playerId].name) {
+                    this.playerInfoMap[playerId].name = _generateName();
                 }
 
                 const playerPayload = {
@@ -225,6 +236,10 @@ class GameSession {
                     .catch(() => finishAdd());
             }
         } else {
+            if (!this.playerInfoMap[playerId].name) {
+                this.playerInfoMap[playerId].name = _generateName();
+            }
+
             const playerPayload = {
                 playerId,
                 settings: this.playerSettingsMap[playerId],
@@ -252,6 +267,9 @@ class GameSession {
     }
 
     removePlayer(playerId) {
+        // Disconnect mid-drag counts as releasing — games need the drag-end
+        this._endPress(playerId, null);
+
         try {
             this.game.handlePlayerDisconnect && this.game.handlePlayerDisconnect(playerId);
         } catch (e) {
@@ -356,6 +374,11 @@ class GameSession {
                 this.game.handleKeyUp && this.game.handleKeyUp(pid, input.key);
             } else if (input.type === 'mouseup') {
                 this.game.handleMouseUp && this.game.handleMouseUp(pid, input.data);
+                this._endPress(pid, input.data);
+            } else if (input.type === 'mousemove') {
+                // Only sent while the pointer/finger is held down — drives
+                // drag handlers (game.handleMouseMove + pressed node's onDrag)
+                this._handleDragMove(pid, input.data);
             } else if (input.type === 'input') {
                 if (input.gamepad) {
                     this.game.handleGamepadInput && this.game.handleGamepadInput(pid, input);
@@ -518,6 +541,7 @@ class GameSession {
             : (fn) => setTimeout(fn, 0);
         schedule(() => {
             this._broadcastScheduled = false;
+            this._checkActivePresses();
             this._broadcastState();
         });
     }
@@ -570,37 +594,134 @@ class GameSession {
     // Private: click / hit-testing
     // -----------------------------------------------------------------------
 
+    // Map raw client coordinates (0-100 canvas space) into game space,
+    // undoing the frame bezel scaling. Points on the bezel itself pass
+    // through unscaled — frame nodes live in raw space.
+    _toGameCoords(x, y) {
+        if (!this.frameEnabled) return { x, y };
+        if (x <= (this.bezelX / 2) || x >= (100 - this.bezelX / 2)
+            || y <= (this.bezelY / 2) || y >= (100 - this.bezelY / 2)) {
+            return { x, y };
+        }
+        const shiftedX = x - (this.bezelX / 2);
+        const shiftedY = y - (this.bezelY / 2);
+        return {
+            x: shiftedX * (1 / ((100 - this.bezelX) / 100)),
+            y: shiftedY * (1 / ((100 - this.bezelY) / 100)),
+        };
+    }
+
     _handleClick(playerId, click) {
         if (!click || typeof click.x !== 'number' || typeof click.y !== 'number') return;
         if (click.x < 0 || click.y < 0 || click.x >= 100 || click.y >= 100) return;
 
+        const existingPress = this._activePresses[playerId];
+        // Current clients mark the first click of a physical press with
+        // press: true (and send mousemove while held). Legacy clients send
+        // neither — for them, a click with no open press starts one, and the
+        // clicks they re-send every ~30ms while dragging drive the drag
+        // handlers here (their original repeated-handleClick behavior is
+        // preserved below).
+        const isNewPress = !existingPress || click.press === true;
+
+        if (existingPress && click.press === true) {
+            // The previous release never reached us (blur, off-canvas
+            // release) — close the stale press out before starting this one.
+            this._endPress(playerId, null);
+        } else if (existingPress && !isNewPress) {
+            this._handleDragMove(playerId, click);
+        }
+
         const spectating = this.spectatorsEnabled && !!this.spectators[playerId];
         const clickedNode = this._findClick(click.x, click.y, spectating, playerId);
 
-        if (clickedNode) {
+        const bottomLayer = this.frameEnabled ? this.frame.root : null;
+        const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
+
+        const realNode = clickedNode
+            ? (this.game.findNode(clickedNode.id)
+                || (bottomLayer && bottomLayer.findChild(clickedNode.id))
+                || (topLayer && topLayer.findChild(clickedNode.id)))
+            : null;
+
+        if (isNewPress) {
+            this._activePresses[playerId] = {
+                node: (realNode && realNode.node) || null,
+                x: click.x,
+                y: click.y,
+            };
+        }
+
+        if (realNode && realNode.node && realNode.node.handleClick) {
+            const { x, y } = this._toGameCoords(click.x, click.y);
+            realNode.node.handleClick(playerId, x, y);
+        }
+    }
+
+    // A held pointer moved (mousemove input, or a legacy client's repeated
+    // click). Updates the press position and fires the drag handlers.
+    _handleDragMove(playerId, move) {
+        if (!move || typeof move.x !== 'number' || typeof move.y !== 'number') return;
+        if (move.x < 0 || move.y < 0 || move.x >= 100 || move.y >= 100) return;
+
+        const press = this._activePresses[playerId];
+        if (press) {
+            press.x = move.x;
+            press.y = move.y;
+        }
+
+        const { x, y } = this._toGameCoords(move.x, move.y);
+
+        try {
+            this.game.handleMouseMove && this.game.handleMouseMove(playerId, { x, y });
+        } catch (e) {
+            console.error('[GameSession] game.handleMouseMove threw:', e);
+        }
+
+        if (press && press.node && typeof press.node.onDrag === 'function') {
+            try {
+                press.node.onDrag(playerId, x, y);
+            } catch (e) {
+                console.error('[GameSession] node.onDrag threw:', e);
+            }
+        }
+    }
+
+    // End a player's active press, firing the pressed node's offClick with
+    // the release point. release may be null (disconnect, node removal, lost
+    // mouseup) — the last known drag position is used instead.
+    _endPress(playerId, release) {
+        const press = this._activePresses[playerId];
+        if (!press) return;
+        delete this._activePresses[playerId];
+
+        if (press.node && typeof press.node.offClick === 'function') {
+            const hasCoords = release && typeof release.x === 'number' && typeof release.y === 'number';
+            const raw = hasCoords ? release : { x: press.x, y: press.y };
+            const { x, y } = this._toGameCoords(raw.x, raw.y);
+            try {
+                press.node.offClick(playerId, x, y);
+            } catch (e) {
+                console.error('[GameSession] node.offClick threw:', e);
+            }
+        }
+    }
+
+    // A pressed node can be removed from the tree mid-drag by game logic.
+    // The press can't meaningfully continue, so close it out (fires offClick).
+    // Called from the coalesced broadcast, which every tree change triggers.
+    _checkActivePresses() {
+        for (const pid in this._activePresses) {
+            const press = this._activePresses[pid];
+            if (!press.node) continue;
+
             const bottomLayer = this.frameEnabled ? this.frame.root : null;
             const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
+            const stillPresent = this.game.findNode(press.node.id)
+                || (bottomLayer && bottomLayer.findChild(press.node.id))
+                || (topLayer && topLayer.findChild(press.node.id));
 
-            const realNode = this.game.findNode(clickedNode.id)
-                || (bottomLayer && bottomLayer.findChild(clickedNode.id))
-                || (topLayer && topLayer.findChild(clickedNode.id));
-
-            if (realNode && realNode.node && realNode.node.handleClick) {
-                if (this.frameEnabled) {
-                    if (click.x <= (this.bezelX / 2) || click.x >= (100 - this.bezelX / 2)
-                        || click.y <= (this.bezelY / 2) || click.y >= (100 - this.bezelY / 2)) {
-                        realNode.node.handleClick(playerId, click.x, click.y);
-                    } else {
-                        const shiftedX = click.x - (this.bezelX / 2);
-                        const shiftedY = click.y - (this.bezelY / 2);
-                        const scaledX = shiftedX * (1 / ((100 - this.bezelX) / 100));
-                        const scaledY = shiftedY * (1 / ((100 - this.bezelY) / 100));
-                        realNode.node.handleClick(playerId, scaledX, scaledY);
-                    }
-                } else {
-                    realNode.node.handleClick(playerId, click.x, click.y);
-                }
-            }
+            if (!stillPresent) this._endPress(pid, null);
         }
     }
 
