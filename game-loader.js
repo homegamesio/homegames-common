@@ -10,18 +10,18 @@ const os = require('os');
 // ---------------------------------------------------------------------------
 const squishMap = {
     '142': 'squish-142',
-    '143': 'squish-143'
+    '143': 'squish-143',
+    '144': 'squish-144'
 };
 
 const DEFAULT_SQUISH_VERSION = '142';
 
 // ---------------------------------------------------------------------------
-// Parse squish version from source file using AST (reliable, needs acorn)
-// Falls back to regex if acorn is unavailable or parsing fails.
+// Parse squish version from a source string using AST (reliable, needs acorn).
+// Throws when the source has no single Game/ViewableGame class; returns null
+// when the class exists but declares no literal squishVersion.
 // ---------------------------------------------------------------------------
-const parseSquishVersion = (codePath) => {
-    const code = fs.readFileSync(codePath, 'utf-8');
-
+const parseSquishVersionFromSource = (code) => {
     const { Parser } = require('acorn');
     const parsed = Parser.parse(code, { ecmaVersion: 'latest', sourceType: 'script' });
 
@@ -51,6 +51,23 @@ const parseSquishVersion = (codePath) => {
     });
 
     return foundVersion;
+};
+
+// Same, from a source file path.
+const parseSquishVersion = (codePath) => parseSquishVersionFromSource(fs.readFileSync(codePath, 'utf-8'));
+
+// ---------------------------------------------------------------------------
+// Detect the squish version of a raw source string (Studio previews send code,
+// not files). Never throws: unparseable source or a missing/non-literal
+// squishVersion falls back to DEFAULT_SQUISH_VERSION — the same fallback the
+// path-based call sites apply around parseSquishVersion.
+// ---------------------------------------------------------------------------
+const detectSquishVersion = (code) => {
+    try {
+        return parseSquishVersionFromSource(code) || DEFAULT_SQUISH_VERSION;
+    } catch (err) {
+        return DEFAULT_SQUISH_VERSION;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -185,6 +202,7 @@ module.exports = {
     squishMap,
     DEFAULT_SQUISH_VERSION,
     parseSquishVersion,
+    detectSquishVersion,
     loadGameClass,
     loadGameClassFromPath,
     downloadToFile,

@@ -5,7 +5,7 @@ Shared Node library for the Homegames platform, consumed by every other repo as 
 1. **Utilities & config** — `getConfigValue` (env var → `config.json` → defaults), `getAppDataPath` (per-OS app-data dir), `log`, `getHash` (md5), `getUrl`, `guaranteeDir`.
 2. **The canonical squish version map + game loading** — `game-loader.js`.
 3. **The game-session runtime and orchestration** — `GameSession` and `GameSessionManager` (Docker or fork).
-4. **The game authoring contract** — `docs/squishjs-game-authoring.md`, exposed via `getAuthoringDoc()` / `authoringDocPath` and used to ground the LLM game-generation flow in [worker](../worker).
+4. **The master LLM context doc** — `docs/homegames-context.md` (whole-platform reference + squish.js authoring contract), exposed via `getAuthoringDoc()` / `authoringDocPath` and used to ground the LLM game-generation flow and docs assistant in [worker](../worker).
 
 ## Squish versioning (`game-loader.js`, `link-squish.js`)
 
@@ -46,8 +46,7 @@ Dockerode-based helpers: `isDockerAvailable`, `ensureImage`/`buildImage` (tars t
 
 ## docs/
 
-- **`squishjs-game-authoring.md`** — the load-bearing, actively maintained authoring contract (verified against `squishjs@1.4.2`): what a game is, the AST-scan + Docker-sandbox constraints, the 0–100 coordinate model, hosted vs local sessions. Consumed by the worker's LLM prompts and mirrored on homegames.io at `/authoring-guide`.
-- **`homegames-knowledge.md`** — a compact whole-platform reference (playing, studio, publishing, self-hosting, how it works) that grounds the [worker](../worker)'s docs assistant ("ask something" box on homegames.io/docs.html).
+- **`homegames-context.md`** — the load-bearing, actively maintained master LLM context doc, verified against the real code. Part I: whole-platform reference (playing, studio, publishing, self-hosting, internals) — grounds the [worker](../worker)'s docs assistant. Part II: the squish.js authoring contract (what a game is, the AST-scan + Docker-sandbox constraints, the 0–100 coordinate model, hosted vs local sessions) — grounds LLM game generation. Mirrored on homegames.io at `/authoring-guide`.
 - `SYSTEM.md`, `ARCHITECTURE.md`, `FLOWS.md`, `DATA-MODEL.md`, `INFRA.md`, `OPERATIONS.md` — whole-platform background docs with self-described `TODO: confirm` markers; useful context, not authoritative per-repo documentation.
 
 ## Configuration

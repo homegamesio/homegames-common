@@ -21,6 +21,7 @@
 
 const WebSocket = require('ws');
 const { squishMap, DEFAULT_SQUISH_VERSION } = require('./game-loader');
+const { MAX_SAVE_DATA_BYTES, SAVE_PUSH_OPCODE, SAVE_REQUEST_OPCODE } = require('./save-games');
 
 // Simple name generator for anonymous players
 const _NAME_WORDS = [
@@ -115,6 +116,11 @@ class GameSession {
         // press started on and the last known pointer position. Set on click,
         // updated by mousemove, cleared by mouseup / disconnect / node removal.
         this._activePresses = {};
+
+        // Pending client-save requests (broadcast save backend): playerId ->
+        // { gameKey, resolve, timer }. Resolved by a 'saveData' input from
+        // that player, or null on timeout/disconnect.
+        this._pendingSaveRequests = {};
 
         // Optional subsystems
         this.spectatorsEnabled = !!opts.spectators;
@@ -270,6 +276,9 @@ class GameSession {
         // Disconnect mid-drag counts as releasing — games need the drag-end
         this._endPress(playerId, null);
 
+        // A pending save request can't be answered anymore
+        this._resolvePendingSave(playerId, null);
+
         try {
             this.game.handlePlayerDisconnect && this.game.handlePlayerDisconnect(playerId);
         } catch (e) {
@@ -405,6 +414,22 @@ class GameSession {
                 const node = this.game.findNode(input.nodeId)
                     || (topLayer && topLayer.findChild(input.nodeId));
                 if (node && node.node?.offHover) node.node.offHover(pid);
+            } else if (input.type === 'saveData') {
+                // Answer to a SAVE_REQUEST_OPCODE frame — platform plumbing,
+                // never forwarded to the game. Content is validated again by
+                // extractClientSaveData before any game sees it.
+                const pending = this._pendingSaveRequests[pid];
+                if (pending && input.gameKey === pending.gameKey) {
+                    let save = (input.save && typeof input.save === 'object') ? input.save : null;
+                    try {
+                        if (save && Buffer.byteLength(JSON.stringify(save), 'utf8') > MAX_SAVE_DATA_BYTES + 1024) {
+                            save = null;
+                        }
+                    } catch (e) {
+                        save = null;
+                    }
+                    this._resolvePendingSave(pid, save);
+                }
             }
         } catch (e) {
             console.error(`[GameSession] Error handling input type="${input.type}" for player ${pid}:`, e);
@@ -497,6 +522,17 @@ class GameSession {
         }
     }
 
+    // Tell one player's client to leave this session and run a game
+    // single-player in the browser (LocalSession fed by the server's
+    // /games/:gameKey/local-manifest endpoint). Opcode 12: [12] + UTF-8 JSON.
+    sendLocalPlayRedirect(playerId, { gameKey, versionId = null } = {}) {
+        const ws = this.players[playerId];
+        if (ws && gameKey) {
+            const payload = Buffer.from(JSON.stringify({ gameKey, versionId }), 'utf8');
+            this._send(ws, Buffer.concat([Buffer.from([12]), payload]));
+        }
+    }
+
     joinSession(spectatorId) {
         const ws = this.spectators[spectatorId];
         if (ws && this.port) {
@@ -511,6 +547,59 @@ class GameSession {
     }
 
     // -----------------------------------------------------------------------
+    // Save games (broadcast backend)
+    // -----------------------------------------------------------------------
+
+    // Push a save envelope to every connected client. Used when server-side
+    // save files are disabled — the clients are the persistence layer.
+    broadcastSaveData(envelope) {
+        let payload;
+        try {
+            payload = Buffer.concat([
+                Buffer.from([SAVE_PUSH_OPCODE]),
+                Buffer.from(JSON.stringify(envelope)),
+            ]);
+        } catch (e) {
+            return;
+        }
+        for (const pid in this.players) {
+            this._send(this.players[pid], payload);
+        }
+        for (const sid in this.spectators) {
+            this._send(this.spectators[sid], payload);
+        }
+    }
+
+    // Ask a connected player's client for its stored save of `gameKey`.
+    // Resolves the envelope the client answers with (or null on timeout,
+    // disconnect, or no save). Used at session creation so the new game can
+    // be constructed with the creating player's saveData.
+    requestClientSave(playerId, { gameKey } = {}, timeoutMs = 3000) {
+        const ws = this.players[playerId];
+        if (!ws || typeof gameKey !== 'string') return Promise.resolve(null);
+
+        // A newer request supersedes any outstanding one for this player
+        this._resolvePendingSave(playerId, null);
+
+        return new Promise((resolve) => {
+            const timer = setTimeout(() => this._resolvePendingSave(playerId, null), timeoutMs);
+            this._pendingSaveRequests[playerId] = { gameKey, resolve, timer };
+            this._send(ws, Buffer.concat([
+                Buffer.from([SAVE_REQUEST_OPCODE]),
+                Buffer.from(JSON.stringify({ gameKey })),
+            ]));
+        });
+    }
+
+    _resolvePendingSave(playerId, value) {
+        const pending = this._pendingSaveRequests[playerId];
+        if (!pending) return;
+        delete this._pendingSaveRequests[playerId];
+        clearTimeout(pending.timer);
+        try { pending.resolve(value); } catch (e) {}
+    }
+
+    // -----------------------------------------------------------------------
     // Utilities
     // -----------------------------------------------------------------------
 
@@ -519,6 +608,9 @@ class GameSession {
     }
 
     destroy() {
+        for (const pid in this._pendingSaveRequests) {
+            this._resolvePendingSave(pid, null);
+        }
         try { if (this.game.destroy) this.game.destroy(); } catch (e) {}
         try { if (this.game.clearAllTimers) this.game.clearAllTimers(); } catch (e) {}
         this.players = {};
@@ -732,11 +824,24 @@ class GameSession {
             clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.root.node, null, { x: 1, y: 1 }, false, 0) || clicked;
         }
 
-        const layers = this.game.getLayers();
-        for (let i = 0; i < layers.length; i++) {
-            const layer = layers[i];
-            const scale = layer.scale || this.scale;
-            clicked = this._findClickHelper(x, y, spectating, playerId, layer.root.node, null, scale, true, 0) || clicked;
+        // The bezel band belongs to the frame. Game geometry that overflows
+        // the viewport is pinned at the frame edge visually (squish clamps
+        // scaled layers), but the hit-test runs on raw coordinates — without
+        // this guard an overflowing game polygon shadows the frame's controls
+        // (home button, spectate/join, settings) and swallows their clicks.
+        // Mirrors the band test in _toGameCoords.
+        const inBezel = this.frameEnabled && (
+            x <= (this.bezelX / 2) || x >= (100 - this.bezelX / 2)
+            || y <= (this.bezelY / 2) || y >= (100 - this.bezelY / 2)
+        );
+
+        if (!inBezel) {
+            const layers = this.game.getLayers();
+            for (let i = 0; i < layers.length; i++) {
+                const layer = layers[i];
+                const scale = layer.scale || this.scale;
+                clicked = this._findClickHelper(x, y, spectating, playerId, layer.root.node, null, scale, true, 0) || clicked;
+            }
         }
 
         if (this.frameEnabled && this.frame.topLayerRoot) {

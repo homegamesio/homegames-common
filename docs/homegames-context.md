@@ -1,6 +1,223 @@
-# SquishJS Game Authoring — Technical Reference for Code Generation
+# Homegames — Master LLM Context
 
-> Context document for an LLM that writes Homegames games. Everything here is verified against `squishjs@1.4.2` (the `squish-142` alias), the server's real click/frame pipeline, and the shipped first-party catalog games. If you generate a game, follow this contract exactly. Code that violates the **Hard Constraints** section will be auto-rejected by the publishing pipeline before a human ever sees it.
+> This is the single grounding document for every Homegames AI task: generating and editing games, and answering questions about the platform. **Part I** is the whole-platform reference — what Homegames is, how playing, making, publishing, and self-hosting work, and how the system works under the hood. **Part II** is the authoritative squish.js game-authoring contract, verified against the real code (the squish library, the server's click/frame pipeline, the browser client, and the publish validator). When you write or edit game code, Part II is the contract — follow it exactly; code that violates its Hard Constraints is auto-rejected by the publishing pipeline before a human ever sees it.
+
+---
+
+# PART I — The Homegames platform
+
+## What Homegames is
+
+Homegames is a free, open-source (GPLv3) platform for making, sharing, and playing simple
+multiplayer browser games. Nothing to install: games run in any web browser, and phones work as
+first-class controllers and screens. Games are small JavaScript programs, usually a single file.
+Everything — platform code, website, and every published game — is open source at
+github.com/homegamesio. Created and maintained by Joseph Garcia as a mostly-solo project since 2018.
+
+Two ways to use it:
+1. **The website (homegames.io)** — browse the catalog and play published games, or build your own
+   in the browser-based Developer Studio.
+2. **Self-hosting** — run a Homegames server on a machine at home; everyone on the network gets a
+   game dashboard by typing `homegames.link` into any browser.
+
+## Playing games
+
+- Browse the catalog at homegames.io/catalog.html. Game pages show description, published versions,
+  comments, active sessions, and browsable source code ("View Source", published commits only).
+- **Single-player games**: clicking Play runs the game entirely in your browser tab (a "local
+  session") — no server involved after the initial load, no account needed.
+- **Multiplayer games**: "Play with friends" starts a hosted session on the platform and gives the
+  creator a shareable link. Anyone who opens the link joins the same game from their own device.
+  Share links are date-bound (valid the day minted plus the next day, UTC). Sessions can be marked
+  private (unlisted — joinable by link only). Creating a session requires no account.
+- **Download**: games can be downloaded as a single self-contained HTML file (game + runtime +
+  assets) that runs offline. Downloaded copies run as solo local sessions — multiplayer features
+  don't work offline.
+- No account is needed to play.
+- Comments on game pages: up to 200 characters; signed-in comments are attributed; anonymous
+  comments are allowed (rate-limited to about one per hour per network).
+
+## Accounts
+
+- Needed only to save games to the cloud, run online multiplayer previews, and publish. Playing and
+  guest-mode Studio use need no account.
+- Signup: display name (3–20 chars, letters/digits/`_`/`-`) + email + password. Log in with either
+  the display name or the email. Email verification is a 6-digit code (24h expiry, resendable);
+  publishing, asset uploads, and all Studio cloud saves require a verified email.
+- Password reset: emailed 8-character code (1h expiry) at homegames.io/reset-password.html.
+- Developer profiles (bio, image, optional BTC address, published games, download/session totals)
+  are public pages.
+
+## The Developer Studio (homegames.io/studio.html)
+
+A browser IDE for making games. Features:
+- **Guest mode**: pick a template, edit, and run local previews with no account. The draft persists
+  in the browser; creating an account later claims it (verified email required to claim).
+- **Templates**: starter games — blank, click, keyboard, multiplayer, text input, image upload,
+  animation, scrolling world, buttons, glow & fade — all targeting squish-142.
+- **Editing**: file tree (folders, drag-to-move) + tabbed editor with syntax highlighting. "Save
+  Version" commits — game source is Git-backed (each game is a real git repo on the platform's git
+  server), so versions have real history; any version can be viewed and restored.
+- **Preview**: "local" runs the game instantly in-tab (with a debugging inspector: frame recording,
+  input timeline, node highlighting, simulated extra players); "online" hosts a real multiplayer
+  session with a shareable link (account required).
+- **Assets**: upload images/audio/fonts (drag & drop), draw images on a canvas, record audio, tag
+  and describe assets, mark them public/private.
+- **Guide button**: shows this authoring reference in-app and copies it to the clipboard for use as
+  context with an external AI assistant.
+- **AI editing**: the Studio has an end-to-end AI feature (an "AI Edit" button on existing games and
+  a "Generate with AI" option when creating one) backed by a model running on Homegames' own
+  hardware. The server-side endpoint is gated by a flag (`AI_EDITS_ENABLED`) that is **currently
+  off**, so AI edits may be unavailable; the docs assistant ("ask something" on
+  homegames.io/docs.html) is live but answers questions only — it does not write games.
+- **Publish**: submit a saved version to the catalog (see Publishing below).
+
+## Making games (essentials — the full contract is Part II)
+
+- A game is a JavaScript class exported from `index.js` (`module.exports = MyGame`), extending
+  `Game` (or `ViewableGame` for scrolling worlds) from a versioned squish package:
+  `const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-142');`
+- Required surface: `static metadata()` (must include `squishVersion` matching the require, plus
+  `name`, `author`, `description`, `aspectRatio`, optional `tickRate`, `maxPlayers` (default 64),
+  `services`, `assets`), a constructor calling `super()`, and `getLayers()` returning
+  `[{ root: this.base }]`.
+- The screen is a 100×100 grid; three node types (Shape, Text, Asset); colors are `[r,g,b,a]`
+  0–255 arrays; state changes must be signaled with `onStateChange()`; players are numbers and
+  `playerIds` on a node controls visibility, not ownership. All of this — and every gotcha — is
+  specified precisely in Part II.
+
+## Publishing
+
+From the Studio, on a saved version (verified account required):
+1. The game needs a description, a thumbnail, and edits beyond the starter template.
+2. Automated validation runs:
+   - `index.js` at the repo root, ≤ 5 MB per file, ≤ 20 MB total, no symlinks.
+   - A **GPLv3 `LICENSE` file containing the exact GPLv3 text** (whitespace-normalized match).
+   - A **substantive `README`** — at least ~40 characters of real content beyond headings.
+   - `static metadata()` must contain **literal** `squishVersion` and `name` values (statically
+     parsed, never executed).
+   - An AST scan of every JS file: only `squish-NNN` and the game's own relative files may be
+     required — no Node built-ins, no npm packages, no network, no filesystem, no `eval` /
+     `new Function` / dynamic `require` / dynamic `import`.
+   - A real sandboxed run in a network-isolated container: the game must load, render, and survive
+     ~5 seconds of ticking **and simulated play** — two players join, keys are pressed, up to 25
+     clickable nodes are clicked, a player disconnects. A throw during require, construction,
+     `handleNewPlayer`, or `tick()` is a hard reject (input-handler throws are recorded as warnings).
+3. On passing, the game is listed in the catalog automatically — there is no human review step just
+   to get listed. Featured games are hand-picked. Uploaded images are automatically screened for
+   NSFW content.
+4. Every published game is GPLv3 and its source is browsable from its game page.
+
+Publish requests can take a few minutes to process; status is shown in the Studio. Supported squish
+versions for new publishes are 142/143/144 (default and recommended: 142).
+
+## Assets (platform-side)
+
+- Developers upload images, audio, and fonts in the Studio (verified account; 6 MB max per asset,
+  100 assets per user). Supported types are detected from the file's actual bytes: images
+  (JPEG/PNG/GIF/WebP/BMP), audio (MP3/WAV/OGG/FLAC/MP4/WebM), fonts (TTF/OTF).
+- Assets get stable ids; games reference them by id in `metadata().assets`. Public assets appear in
+  the shared asset catalog. Tags and descriptions are editable; NSFW flags apply (automatic
+  screening plus admin override).
+
+## Self-hosting
+
+Summary of the current architecture (guide page: homegames.io/self-hosting.html):
+
+- Run a Homegames server on a machine at home (Windows/macOS/Linux, Node.js 18+, git, and Docker
+  for isolated game sessions). Clone the repos side by side — `homegames`, `homegames-core`,
+  `homegames-client`, `homegames-common`, `squish` — `npm install` where needed, run
+  `npm run build` in **homegames-client** (the core server serves its built bundle), then in
+  `homegames/`: `node index.js`. **No sudo needed** — nothing binds ports 80/443.
+- The launcher forks **homegames-core**, which is the whole server: one process on port **9801**
+  serves the dashboard, the browser client, and the game WebSocket, and auto-opens a browser when
+  ready. (homegames-web, the old separate static web server on 80/443, is legacy for local
+  instances.)
+- Then any device on the same network plays by visiting `homegames.link` in a browser. The server
+  registers itself with the homegames.link service over an outbound connection only (no port
+  forwarding or router config), heartbeating every ~10s; homegames.link matches visitors to servers
+  by shared public IP and redirects the browser to the server's LAN address.
+- **HTTPS on the LAN is opt-in** (`HTTPS_ENABLED`, default off; toggled from the dashboard's
+  settings UI). When enabled, the network gets its own `*.homegames.link` subdomain (derived from
+  the network's public IP) pointed at the server's LAN address, with a real Let's Encrypt
+  certificate. The server generates its key locally and submits only a signing request — the
+  private key never leaves the machine. The cert is issued in the background (a "setting up a
+  secure connection" page auto-refreshes meanwhile) and takes effect after a restart, which the
+  settings UI performs. Certs renew automatically (checked daily, renewed within 14 days of expiry,
+  hot-swapped without restart).
+- Game sessions run one per **Docker container** (image `homegames-runner`), on ports from
+  `GAME_SERVER_PORT_RANGE_MIN/MAX` (8300–8400); players' browsers are redirected into that range,
+  so the LAN must reach those ports. Firewalls or wifi "AP/client isolation" blocking 9801 or
+  8300–8400 are the usual cause of "dashboard loads but games don't".
+- ~50 built-in games ship with homegames-core; catalog games are browsed and downloaded from the
+  platform API via the dashboard.
+- Internet is needed for homegames.link discovery, catalog downloads, and certs; fully-offline LAN
+  play works by visiting `http://<server LAN IP>:9801` directly.
+- "No Homegames servers found" at homegames.link usually means the visiting device and server
+  aren't on the same network from the internet's point of view (guest wifi, VLANs, VPNs) — or the
+  server isn't running / hasn't heartbeated in the last 90 seconds.
+- Config: the repo's `config.json`, overridden key-by-key by a user config in the OS app-data
+  directory (written by the dashboard settings UI), overridden by env vars. Notable keys:
+  `LINK_ENABLED`, `HOME_PORT` (9801), `GAME_SERVER_PORT_RANGE_MIN/MAX` (8300–8400), `HTTPS_ENABLED`,
+  `START_PATH` (boot straight into one game instead of the dashboard), `PUBLIC_GAMES` (connect
+  sessions to a public relay so internet players can join via a 4-character server code).
+- Dev mode: `npm start` in homegames-core alone gives plain-HTTP LAN play on 9801.
+- Hosting the entire platform (your own catalog/API) is possible — everything is open source — but
+  is a much bigger project (MongoDB, RabbitMQ, a Forgejo git server, Docker, plus the api,
+  homegamesio, worker, and homegames.link services).
+
+## How the platform works (under the hood)
+
+- Games are **server-authoritative scene trees**: the game maintains a tree of shape/text/asset
+  nodes; the platform renders it and routes input back. Games never draw pixels or open sockets.
+- The tree travels as **squish**, a compact binary serialization format (npm package `squishjs`),
+  versioned so old games keep working — each game pins its `squishVersion`. Versioned aliases
+  (`squish-142` = squishjs@1.4.2, etc.) are what games require; 142 is the platform default, and
+  142/143/144 are the currently supported versions.
+- The browser side is **homegames-client**: connects over WebSocket, decodes squish frames onto a
+  canvas, sends input as JSON. The same engine powers the website player, hosted sessions,
+  self-hosted dashboards, and offline downloads. It also contains **LocalSession** — a full
+  in-browser runtime (the real squish engine plus a faithful port of the server's input pipeline)
+  that runs single-player games entirely client-side.
+- Hosted multiplayer sessions run **one Docker container per session**, managed by a session API
+  ("Homenames") and a session manager that owns a port pool and tears down sessions ~30s after the
+  last player or spectator leaves. Player ids run 1–127 (relay players 128–255); input is
+  rate-limited to ~120 messages/sec per connection.
+- **The platform API** (api.homegames.io) is a plain Node service backed by **MongoDB** (users,
+  games, versions, assets, comments, publish/AI requests). Game source lives in a **Forgejo git
+  server** behind the API — Studio saves are real commits. Background work flows through
+  **RabbitMQ**: a `publish_requests` queue (publish validation worker) and a `homegames-jobs` queue
+  consumed by a self-hosted worker that handles TLS certificate issuance (Let's Encrypt dns-01),
+  AI game generation/editing, and docs questions. The AI jobs run on a local model served by
+  LM Studio on Homegames' own hardware, grounded in this document.
+- Main repos (github.com/homegamesio): `squish` (game library + serialization), `homegames-core`
+  (game/session server + built-in games; serves the web client for local instances),
+  `homegames-client` (browser engine + LocalSession), `homegames-common` (shared library: game
+  loading, sessions, local play, saves, Docker helper — and this document), `homegames` (self-host
+  launcher/supervisor), `homegames-api` / `api` (platform backend), `homegames.link` (LAN
+  discovery + subdomain/DNS service), `worker` (background jobs: certs, AI, docs assistant),
+  `homegamesio` (the website + Studio), `homegames-web` (legacy standalone web server).
+
+## Misc facts
+
+- License: everything is GPLv3, including published games.
+- Contact/support: email joseph@homegames.io, or open a GitHub issue (github.com/homegamesio).
+- Bugs/ideas: GitHub issues on the relevant repo under github.com/homegamesio.
+
+## Answering guidance (for the docs assistant)
+
+- If a question is about game code specifics, answer from Part II below — it is the authoritative
+  reference. If it's still not covered, point to the docs page (homegames.io/docs.html) and the
+  full guide (served at /authoring-guide, also via the Studio's Guide button) rather than guessing.
+- If asked to generate a full game or large amounts of code: explain that this assistant doesn't
+  write games, and point to the Studio's templates and docs. Small illustrative snippets are fine.
+- If the question is unrelated to Homegames, say you can only help with Homegames.
+
+---
+
+# PART II — SquishJS Game Authoring: the contract for valid games
+
+> Technical reference for writing Homegames games, verified against the real platform code — the squish library (`squish-142`, the default), the server's click/frame pipeline, the browser client, and the publish validator. If you generate a game, follow this contract exactly. Code that violates the **Hard Constraints** section will be auto-rejected by the publishing pipeline before a human ever sees it.
 
 ---
 
@@ -11,13 +228,14 @@ A Homegames game is a **single JavaScript class** that extends `Game` from a ver
 - **Hosted session (multiplayer):** a Node server runs the game; every player's browser connects over WebSocket, renders frames, and sends input back. One shared instance serves all players.
 - **Local session (single-player / instant play / downloads):** the player's own browser runs the game — the platform ships your source files to a `LocalSession` that executes the class client-side with the *same* squish engine, tick loop, input pipeline, and per-player frame logic. No server involved. This is how games on homegames.io play instantly, and how a downloaded game (a single self-contained HTML file) runs offline.
 
-Your game cannot tell which one it's in, and must never try. Same constructor arguments, same handler payloads, same rendering — the deliberate differences are that a local session has exactly **one player** (id `1`), stubbed persistence/services, and no spectators.
+Your game cannot tell which one it's in, and must never try. Same constructor arguments, same handler payloads, same rendering — the deliberate differences are that a local session has exactly **one player** (id `1`), stubbed services, and no spectators. Persistence (`saveGame`/`saveData`, §3) works in both: hosted sessions save on the host (or deliver saves to players' browsers, per server config), local sessions save in browser storage.
 
 Key mental model:
 
 - **You never render or draw.** You build and mutate a tree of nodes (`Shape`, `Text`, `Asset`). The client draws them.
+- **The node tree is the wire payload, not your data model.** Every dirty tick the whole tree is re-serialized and shipped to every player, so the tree should contain exactly what players need to **see, hear, and interact with right now — and nothing else**. Everything else the game knows (upcoming waves, the rest of the deck, the hidden word, long-term scores, entities outside the current fight) lives in **plain instance variables**, and only becomes nodes at the moment a player should experience it. When a player is done with something — a menu dismissed, a round ended, a screen replaced — its nodes come **out of the tree** (`removeChild`/`clearChildren`); the state they represented stays in your variables. There is no "keep it in the tree but hidden" optimization: a hidden node costs what a visible node costs (§4.1, §8). `ViewableGame` (§13) is this same idea extended to worlds bigger than one screen — each player's rendered view is just their current window into a larger space you model in data.
 - **You never write networking.** The runtime multiplexes all players into one shared game instance. Player input arrives as method calls.
-- **Treat browser globals as nonexistent.** There is no `window`, `document`, `location`, `alert`, `localStorage`, or DOM in your game's world. Hosted sessions run in Node, where `location.reload()` in a "play again" handler throws a `ReferenceError` and crashes the session — and even in a browser-side local session the loader hands your code only `module`/`exports`/`require`. The same file must run in both runtimes, so the rule is absolute. Restart/replay is always done by **resetting your own state in place** — clear the relevant nodes, reset your variables, rebuild the play field.
+- **Treat browser globals as nonexistent.** There is no `window`, `document`, `location`, `alert`, `localStorage`, or DOM in your game's world. Hosted sessions run in Node, where `location.reload()` in a "play again" handler throws a `ReferenceError` and crashes the session. Beware the trap: a browser-side local session does NOT block these globals — a `window`-using game *appears to work* in local preview and then dies the moment it runs hosted. The same file must run in both runtimes, so the rule is absolute. Restart/replay is always done by **resetting your own state in place** — clear the relevant nodes, reset your variables, rebuild the play field.
 - **The coordinate plane is `0–100` on both axes**, regardless of screen size or aspect ratio. `(0,0)` is top-left, `(100,100)` is bottom-right. Think percentages.
 - **State changes are not automatic.** After you mutate a node, you must signal it (see §4). This is the #1 mistake — read §4 carefully.
 - **The game is shared, not per-player.** One instance serves all players. Per-player visuals are done with `playerIds` (see §8), not separate instances.
@@ -27,17 +245,17 @@ Key mental model:
 
 ## 2. Hard Constraints (your code is validated automatically)
 
-The publish pipeline runs an AST scan, then loads and runs your game in a Docker sandbox for ~5 seconds. To pass:
+The publish pipeline checks repo shape, statically parses metadata, runs an AST scan of every JS file, then loads and runs your game in a network-isolated Docker sandbox for ~5 seconds of simulated play. To pass:
 
-1. **Entry point is `index.js`** and it must `module.exports = YourGameClass;` (a class, not an instance).
-2. **`require` only the SquishJS package and your own local files.** Use `require('squish-142')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, etc.). Do not make network requests, touch the filesystem, spawn processes, or read `process.env`. Browser globals (`window`, `document`, `location`, `navigator`, `alert`) **do not exist** — referencing any of them throws at runtime.
-3. **No dynamic code execution:** no `eval`, no `new Function(...)`, no `require(variable)`.
-4. **`static metadata()` is required** and must return an object whose `squishVersion` matches the package you imported (`'142'` for `squish-142`).
-5. **It must not throw** during `require`, construction, or the first few seconds of ticking. A crash = rejected. But note the sandbox's blind spot: **it never presses a key or clicks anything**, so code behind input handlers, `onClick`s, and phase gates (`if (!this.gameStarted) return;`) runs zero times during validation. A `ReferenceError` there sails through and crashes the game mid-session, the first time a real player triggers it. §15.1 tells you how to write that code so a typo can't hide in it.
+1. **Entry point is `index.js` at the repo root** and it must `module.exports = YourGameClass;` (a class, not an instance). No symlinks anywhere in the repo.
+2. **`require` only the SquishJS package and your own local files.** Use `require('squish-142')`. Do **not** require Node built-ins (`fs`, `http`, `https`, `net`, `child_process`, `os`, `path`, `crypto`, `cluster`, `dgram`, `vm`, `worker_threads`, etc.) — and **no npm packages either**; the only legal requires are `/^squish-\d+$/` and relative paths to the game's own files. Do not make network requests, touch the filesystem, spawn processes, or read `process.env`. Browser globals (`window`, `document`, `location`, `navigator`, `alert`) **do not exist** in hosted sessions — referencing any of them throws at runtime.
+3. **No dynamic code execution:** no `eval`, no `new Function(...)`, no `require(variable)`, no dynamic `import()`, no string arguments to `setTimeout`/`setInterval`, no `constructor.constructor` tricks. And never call `process.exit()` — the validator treats it as a crash.
+4. **`static metadata()` is required** and must return an object literal whose **`squishVersion` and `name` are literal values** (the pipeline statically parses them without executing your code — a computed value here fails publish outright), with `squishVersion` matching the package you imported (`'142'` for `squish-142`). If present, `tickRate` must be 1–120, `name` ≤ 100 chars, `description` ≤ 1000 chars.
+5. **It must not throw** during `require`, construction, or the validation run. The sandbox doesn't just tick the game — it **simulates play**: two players join (`handleNewPlayer` throwing is a hard reject), keys are pressed (w/a/s/d/space/Enter/arrows), the mouse moves, **up to 25 clickable nodes get clicked at their centers**, and a player disconnects, all while `tick()` runs at your declared rate. Any `tick()` throw or uncaught exception = rejected. Exceptions inside input handlers (`onClick`, key handlers) are recorded as *warnings*, not failures — so a typo there can still ship and crash a real session. And code behind deeper phase gates (a second menu, a game-over screen) may never execute during validation at all. §15.1 tells you how to write that code so a typo can't hide in it. The initial scene must also squish cleanly (≤ 10,000 nodes at boot).
 6. **Size limits:** total game ≤ 20 MB, any single file ≤ 5 MB. Keep assets external (referenced by id), not inlined.
-7. **License:** published games are GPLv3. A `LICENSE` file is required at publish time (not your concern when generating the game code itself, but don't add a conflicting license header).
+7. **License and README:** published games are GPLv3 — a `LICENSE` file containing the exact GPLv3 text is required at publish time, **and so is a substantive `README`** (at least ~40 characters of real content beyond headings). Neither is your concern when generating game code itself, but don't add a conflicting license header.
 
-Default to **`squish-142` / `squishVersion: '142'`** for all new games. (Older games pin other versions like `1006`, `0767`, `136`, `138`; the version in the `require` and in `metadata()` must always match.) `142` includes image cropping / spritesheets (§7.3.1) and shadow/glow effects (§7.4).
+Default to **`squish-142` / `squishVersion: '142'`** for all new games. The platform currently supports versions `142`, `143`, and `144` for new publishes (older versions like `1006`, `0767`, `136`, `138` exist in old games but can no longer be published); the version in the `require` and in `metadata()` must always match. `142` includes image cropping / spritesheets (§7.3.1) and shadow/glow effects (§7.4).
 
 ---
 
@@ -76,24 +294,51 @@ class MyGame extends Game {
     handleKeyDown(playerId, key) {}
     handleKeyUp(playerId, key) {}
 
-    // Called every frame if metadata().tickRate is set. Use for game loops/physics.
+    // Pointer stream beyond clicks (see §9 for the press/drag model):
+    handleMouseMove(playerId, { x, y }) {}   // while a pointer is held down
+    handleMouseUp(playerId, data) {}         // pointer released
+
+    // Called every frame. CAREFUL: defining tick() starts the loop even if you
+    // never set metadata().tickRate — it then runs at a DEFAULT 60 fps. For
+    // event-driven games, don't define tick() at all; for tick games, always
+    // declare tickRate explicitly.
     tick() {}
 
-    // Called when the session ends. Base Game.close() clears tracked timers (see §10).
-    // Override to also remove nodes, but you usually don't need to.
+    // Called when a LOCAL (in-browser) session ends; hosted sessions end by
+    // process exit and never call it. Base Game.close() clears tracked timers
+    // (see §10). Override to also remove nodes, but you usually don't need to.
     close() { super.close?.(); }
 }
 
 module.exports = MyGame;
 ```
 
+**Save games (optional).** The constructor's option bag includes `saveGame` and `saveData`:
+
+```js
+constructor({ saveGame, saveData }) {
+    super();
+    // saveData: the previously saved JSON (or undefined on first play)
+    this.clickCount = (saveData && saveData.clickCount) || 0;
+    this.saveGame = saveGame; // call whenever your state is worth keeping
+}
+// later, e.g. at the end of a round:
+//   this.saveGame({ clickCount: this.clickCount });
+```
+
+- `saveGame(data)` takes any JSON-serializable value (≤1 MB) and returns a Promise. The platform debounces writes (bursts coalesce, last call wins), so call it freely at natural checkpoints. Where the save lands — host filesystem, the players' browsers, or browser storage in local play — is the platform's business; identical in all environments.
+- `saveData` is the loaded save (or `undefined`). **Treat it as untrusted input**: on some servers it round-trips through players' browsers, so guard every field access and validate shapes/ranges before using them.
+- One save slot per game per version. To accept saves from earlier versions of your game, declare `saveCompatibility: ['<older-versionId>', ...]` in `metadata()`. Resolution is by **priority order, not timestamp**: the current version's own save is tried first, then each `saveCompatibility` entry in the order you declared it — the first save found wins. List newer versions first.
+- Games decide *when* to save; there is no auto-save on disconnect or shutdown.
+
 **Method signatures are exact and important:**
-- `handleNewPlayer` receives a **single object** `{ playerId, info, settings, clientInfo }` — destructure it. `playerId` is a number. `info.name` is the player's name.
-- `handlePlayerDisconnect(playerId)` receives the **bare id**, not an object.
+- `handleNewPlayer` receives a **single object** `{ playerId, info, settings, clientInfo, requestedGame }` — destructure it. `playerId` is a number. `info.name` is the player's name.
+- `handlePlayerDisconnect(playerId)` receives the **bare id**, not an object. (If a player id reconnects while already connected, the runtime fires `handlePlayerDisconnect` for the old connection and then `handleNewPlayer` again.)
 - `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)` — two positional args.
 - A node's `onClick` receives `(playerId, x, y)` — see §9.
+- Other real hooks the runtime calls when present: `handleMouseMove(playerId, {x, y})` / `handleMouseUp(playerId, data)` (held-pointer stream, §9), `handleGamepadInput(playerId, input)` (gamepad state changes), `handlePlayerUpdate(playerId, { info, settings })` (a player renamed themselves or changed settings).
 
-> **If the runtime doesn't call it, it doesn't exist.** The hooks above are the complete lifecycle — there is no duck typing. A plausible-looking method the runtime never calls (`canAddPlayer()` as a join gate, `getAssets()` as an asset provider) is pure dead code: the game runs, the method sits there looking load-bearing, and everyone assumes it works. That's worse than an error — join capacity is *only* `metadata().maxPlayers`, assets are *only* the metadata literal. When a behavior must exist, verify the mechanism is one named here (or a node `onClick`/`input`), and **delete** anything else so it can't mislead a later reader.
+> **If the runtime doesn't call it, it doesn't exist.** The hooks above are the complete lifecycle — there is no duck typing. A plausible-looking method the runtime never calls (`canAddPlayer()` as a join gate) is pure dead code: the game runs, the method sits there looking load-bearing, and everyone assumes it works. That's worse than an error — join capacity is *only* `metadata().maxPlayers`. When a behavior must exist, verify the mechanism is one named here (or a node `onClick`/`input`), and **delete** anything else so it can't mislead a later reader. (One method that IS honored despite looking optional: a `getAssets()` returning `{ key: Asset }` is merged into the asset bundle by the hosted engine — but the static parser that decides play modes only sees `metadata().assets`, so declare assets in the metadata literal anyway.)
 
 ---
 
@@ -137,7 +382,9 @@ Every notify — an explicit `onStateChange()` **or** one fired for you by `addC
 
 1. **Only notify when something actually changed.** An unconditional `this.base.node.onStateChange()` at the bottom of `tick()` re-squishes and re-broadcasts the whole tree `tickRate` times per second even when the game is sitting on a menu. Track a `changed` flag and notify once, only when true (see §14.2).
 
-2. **Pool particle/trail/projectile nodes — never create/remove nodes per tick.** Per-tick `new GameNode.Shape(...)` + `addChild` + later `removeChild` churn (explosions, engine trails, bullets) grows the tree, generates garbage, and — because tree ops each mark the tree dirty — guarantees a full re-squish every single tick. It's also where orphan bugs hide (a node created but never added, or added but never removed on some code path, leaks forever). The correct pattern is a **fixed pool created once in the constructor, mutated in place, hidden when idle**:
+2. **The tree holds what players are experiencing NOW; everything else is plain variables.** Every node in the tree is serialized on every dirty flush whether anyone can see it or not — a "hidden" node (`playerIds: [0]`, transparent fill, zero size) costs exactly what a visible node costs in squish CPU, and worse, `[0]`-scoped nodes still reach some clients (§8). So do **not** park inactive content in the tree as an "optimization": no pre-built menu screens waiting behind the gameplay, no ended-round scoreboards kept around invisibly, no roster of nodes for entities that aren't on screen. Model those in instance variables and **build nodes when a player should experience them, remove them when they're done** (`addChild`/`removeChild` at a screen transition is one structural notify — cheap, and it makes every subsequent flush smaller). The test for any node: *is some player seeing, hearing, or able to interact with this right now?* If not, it shouldn't be a node.
+
+3. **Pool particle/trail/projectile nodes — never create/remove nodes per tick.** Per-tick `new GameNode.Shape(...)` + `addChild` + later `removeChild` churn (explosions, engine trails, bullets) grows the tree, generates garbage, and — because tree ops each mark the tree dirty — guarantees a full re-squish every single tick. It's also where orphan bugs hide (a node created but never added, or added but never removed on some code path, leaks forever). The correct pattern is a **fixed pool created once in the constructor, mutated in place, hidden when idle**:
 
 ```js
 // Constructor: fixed pool, all hidden (zero-size, transparent).
@@ -184,9 +431,11 @@ for (const p of this.particles) {
 
    The same applies to enemies and pickups in wave games: cap the population, reuse dead slots. `addChild`/`removeChild` is for structural moments (screen transitions, players joining/leaving), not for the per-frame lifecycle of effects.
 
-3. **Update `Text` by reassigning `node.text` — never remove-and-recreate the text node** to change a score/label. Recreation is churn, and it reorders the node's draw position in the tree.
+   **Pooling is the narrow exception to rule 2, not a license to hoard.** A pool exists for things that blink on and off many times per second *during active play* — where per-tick create/remove churn would cost more than the idle slots do. It is sized to the effect's peak (a few dozen nodes), and the whole pool should still come out of the tree at structural moments if the game leaves the phase that uses it. "Pool the particles" does not generalize to "keep everything ever created in the tree and hide it."
 
-4. **Budget node count and glow.** Total bandwidth ≈ node count × ~55 bytes × tickRate × players — keep the tree in the low hundreds of nodes. And the client renders `effects.shadow` with canvas `shadowBlur`, one of the most expensive canvas operations: glow a **handful of focal nodes** (title, the player's ship, a boss), not every enemy, particle, and pickup, or client framerate dies even when the server is fine.
+4. **Update `Text` by reassigning `node.text` — never remove-and-recreate the text node** to change a score/label. Recreation is churn, and it reorders the node's draw position in the tree.
+
+5. **Budget node count and glow.** Total bandwidth ≈ node count × ~55 bytes × tickRate × players — keep the tree in the low hundreds of nodes. And the client renders `effects.shadow` with canvas `shadowBlur`, one of the most expensive canvas operations: glow a **handful of focal nodes** (title, the player's ship, a boss), not every enemy, particle, and pickup, or client framerate dies even when the server is fine.
 
 ---
 
@@ -201,7 +450,9 @@ static metadata() {
         description: 'One-line pitch shown in the catalog.',
         aspectRatio: { x: 16, y: 9 },  // Display aspect ratio. Common: {16,9}, {4,3}, {1,1}.
         thumbnail: 'asset-id-hash',     // Optional asset id used as the catalog thumbnail.
-        tickRate: 60,                   // Frames/sec for tick(). Omit if you have no game loop.
+        tickRate: 20,                   // Frames/sec for tick(). If you define tick(), ALWAYS
+                                        // declare this (an undeclared rate defaults to 60).
+                                        // Must be 1-120. No game loop? Don't define tick() at all.
         maxPlayers: 8,                  // Optional session capacity (default 64). Joins beyond
                                         // this are refused by the platform — there is no
                                         // canAddPlayer() hook; capacity is this field.
@@ -220,21 +471,14 @@ static metadata() {
 - **`'multiplayer'`** — declares a multiplayer game. Its page gets a "Play with friends" flow: the platform spins up a hosted server session and gives the creator a shareable link that friends open to join. Multiplayer games are *also* playable/downloadable locally as a solo session (labeled "Play offline"), so they should still behave sensibly with one player (§14.3).
 - **`'contentGenerator'`** — the game depends on the platform's server-side content-generation service. This **opts the game out of local play and downloads** entirely (the browser can't provide the service). Don't declare it unless the game actually uses it.
 
-**`metadata()` must return an object literal with literal values.** The platform decides a game's play modes (instant play, download eligibility, multiplayer) by **statically parsing the source** — it reads `squishVersion`, `name`, `services`, and `assets` out of the AST without ever executing your code. Computed values (`name: buildName()`, spread objects, `services: SERVICE_LIST`) are invisible to that parser: at best the field is ignored, and if `metadata()` doesn't contain a plain `return { ... }` of literals the game is marked not locally playable at all. Write it as a boring literal.
+**`metadata()` must return an object literal, and the platform-facing fields must be literal values.** The platform decides a game's play modes (instant play, download eligibility, multiplayer) by **statically parsing the source** — it reads `squishVersion`, `name`, `services`, `assets`, and `thumbnail` out of the AST without ever executing your code, and the publish pipeline **rejects** a game whose `squishVersion` or `name` isn't a plain literal. Computed values for the other parsed fields (`services: SERVICE_LIST`, spread objects) are silently invisible — the game gets misclassified (e.g. a multiplayer game treated as single-player). Write the whole thing as a boring literal.
 
-> **The two-literals rule.** The static-parsing constraint has a practical consequence for any centralized tuning object (§15.2): a value needed by both metadata and game logic — in practice `tickRate` and `maxPlayers` — **must exist in two places** and cannot be derived. `tickRate: TUNING.TICK` breaks the parser. The only mitigation is loud comments at **both** sites; one-sided comments get missed:
->
-> ```js
-> // in TUNING:
-> TICK: 20,        // tickRate - MUST match the tickRate literal in metadata()
-> // in metadata():
-> tickRate: 20,    // keep in sync with TUNING.TICK (this must stay a literal)
-> ```
+> **Which fields may derive from a tuning object (§15.2):** `tickRate` and `maxPlayers` are read at **runtime** from the executed `metadata()`, not by the static parser — so `tickRate: TUNING.TICK` and `maxPlayers: TUNING.MAX_PLAYERS` are safe and are the right way to keep those numbers in one place. The fields that must stay literal are exactly the statically-parsed ones: `squishVersion`, `name`, `services`, `assets`, `thumbnail`.
 
 - The plane is always `0–100`; `aspectRatio` only controls how that square is presented (letterboxing on the client). Build your layout in `0–100` space and pick an aspect ratio that suits it.
 - **Aspect-ratio distortion gotcha:** because the `0–100` square is stretched to fill the aspect rectangle, an x-unit and a y-unit are **not** the same size on screen unless the ratio is `{1,1}`. At `{16,9}` everything is wider than tall — a "square" looks like a rectangle, a `polyCircle` looks like an ellipse, and a 45° heading doesn't look like 45°. For UI/party games this is fine. For **rotation- or distance-based geometry** (twin-stick shooters, anything with circles, orbits, or true angles), prefer **`aspectRatio: { x: 1, y: 1 }`** so the math matches the pixels, or compensate for the ratio in your trig. To draw a **physically square** rect at ratio `{x, y}`, use `height = width * (x / y)` (e.g. at `{16,9}` a `2 × 3.56` rect renders square; at `{9,16}` use `2 × 1.13`).
 - **Text size is relative to canvas WIDTH only.** A `size: s` line of text is `s%` of the canvas width tall in pixels — which is `s * (aspectX / aspectY)` **y-units** tall on the plane. At `{1,1}` a size-2 text is ~2 y-units tall; at `{16,9}` it's ~3.6; at `{9,16}` it's ~1.1. Use this to vertically center a label in a box: `textY = boxY + (boxH - size * aspectX / aspectY) / 2`. **Text width is NOT knowable server-side**: each client's canvas resolves the font (default `sans-serif`) with its own metrics, with advance widths anywhere from ~0.6 to ~0.85 of the font size. Budget wide (~`0.85 * size` x-units per character) when sizing boxes/wrapping so wide fonts don't overflow, and never position anything by summing character widths — to place a cursor or caret, embed it in the string itself (a `'▌'` glyph appended to the text lands exactly after the last character on every client; see the Typewriter game).
-- `tickRate` is frames per second for `tick()`. **Every tick with a state change re-squishes and re-broadcasts the whole tree**, so high rates cost real bandwidth. In practice: **15–30 for action games** (shipped catalog games use 15–20 and feel snappy), **8–15 for casual/UI-driven games**, omit entirely for purely event-driven games (click/turn-based) that update only in handlers. Express all in-game durations as `seconds * TICK_RATE` so pacing tweaks don't silently change timers.
+- `tickRate` is frames per second for `tick()`, bounded 1–120 at publish. **Every tick with a state change re-squishes and re-broadcasts the whole tree**, so high rates cost real bandwidth. In practice: **15–30 for action games** (shipped catalog games use 15–20 and feel snappy), **8–15 for casual/UI-driven games**. For purely event-driven games (click/turn-based) that update only in handlers, **don't define a `tick()` method at all** — merely defining one starts the loop, at a default **60 fps** if no `tickRate` is declared. Express all in-game durations as `seconds * TICK_RATE` so pacing tweaks don't silently change timers.
 
 ---
 
@@ -263,11 +507,11 @@ const h = node.node.coordinates2d[2][1] - y;
 
 > **Precision gotcha:** coordinates are serialized as an integer + a 2-decimal fraction, so the on-screen resolution is **~0.01 units** in `0–100` space. Movement smaller than that per frame rounds away — a `tick()` that adds `0.005` to a position will visually stutter or not move at all. Keep per-frame deltas ≥ ~0.05, or accumulate sub-unit motion in a plain variable and only write the rounded value into `coordinates2d`.
 
-> **Off-plane / negative coordinates:** every coordinate is clamped to `[0, 255]` at serialization. **Negative values pin to `0`** — there is no "just off-screen" above or to the left. An enemy spawned at `y = -2` renders sitting *on* the top edge, not hidden beyond it. Values `100–255` survive, so sliding off the **right/bottom** works. To make something enter from the left or top, spawn it at the edge (`0`) already moving inward, or keep its position in plain variables and only give it a node once it's on the plane.
+> **Off-plane / negative coordinates:** off-plane geometry is pinned at serialization, on every session type. The wire clamp is `[0, 255]`: **negatives pin to `0`** (there is no off-screen left or top — ever), and `100–255` survives serialization so content *may* slide off the right/bottom of a frameless canvas, but in a framed hosted session (where the platform bezel surrounds the game) it renders pinned against or under the frame instead. Since the same game runs in every session type, treat pinning as the rule everywhere: nothing is ever "just off-screen" — an enemy spawned at `y = -2` renders sitting *on* the edge, and content sliding off the right smears along the border instead of exiting cleanly. For entrances **and** exits, keep logical position in plain variables and only draw the node while it's fully on the plane (hide/remove it otherwise) — see the walk-on pattern below.
 >
 > **Walk-on entrances — hide until *fully* on-plane.** The variables-first pattern above generalizes: logical position lives in plain vars (negative values are fine there — `r.x = -4 - i * 7` staggers an entering crowd correctly), and the node is drawn only once the entity's **entire rendered box** fits on the plane. The gate is the sprite's **half-width, not zero**: an 8-wide sprite centered at `x` draws from `x - 4`, so the draw condition is `x >= 4` — below that, hide the node (`if (r.x < 4) { hideSprite(n); continue; }`). This bug is invisible in code review because the movement math is *correct* — only the draw smears along the edge. Audit every spawn-at-edge and walk-on entrance for it.
 
-> **Vertex-count cap:** a node's `coordinates2d` is serialized into a length-limited wire frame — **at most ~126 vertices per node**. Beyond that the frame overflows and the node breaks. For detailed silhouettes (terrain skylines, rings, long strips) budget vertices: e.g. a destructible terrain polygon works at 96 columns (~100 vertices), and a "thick outline" strip that traces a path top-and-bottom doubles its vertex count — sample every other point to stay under the cap. Split very detailed geometry across multiple nodes.
+> **Vertex-count cap:** a node's `coordinates2d` is serialized into a length-limited wire frame — **at most 126 vertices per node** (verified: 126 round-trips, 127 breaks the frame). For detailed silhouettes (terrain skylines, rings, long strips) budget vertices: e.g. a destructible terrain polygon works at 96 columns (~100 vertices), and a "thick outline" strip that traces a path top-and-bottom doubles its vertex count — sample every other point to stay under the cap. Split very detailed geometry across multiple nodes.
 
 **Colors** are `[r, g, b, a]` arrays, each `0–255`. `a` (alpha) of `0` is fully transparent, `255` fully opaque.
 
@@ -327,7 +571,7 @@ const box = new GameNode.Shape({
 - `shapeType` comes from `Shapes`: `Shapes.POLYGON` (the workhorse) or `Shapes.LINE`.
 - **`Shapes.CIRCLE` exists as a constant but is NOT rendered — do not use it.** Approximate a circle with a many-sided polygon (see the helper below).
 - **Use `fill` for the shape's interior color.** `color` is the **stroke** color, used together with `border`.
-- **`border` is a single NUMBER, not an object.** It's an outline width on a `0–255` scale (the client renders it as `(border/255) * 0.1 * canvasWidth`, so small numbers like `2`–`10` are thin lines). The stroke is drawn in the node's **`color`** field — so **if you set `border` you must also set `color`**, or rendering the stroke will fail. There is **no `border.color`/`border.width` object** — `border: { color, width }` squishes to garbage. Outlined shape = `fill` (interior) + `color` (stroke) + `border` (numeric width).
+- **`border` is a single NUMBER, not an object.** It's an outline width on a `0–255` scale (the client renders it as `(border/255) * 0.1 * canvasWidth`, so small numbers like `2`–`10` are thin lines). The stroke is drawn in the node's **`color`** field — so **if you set `border` you MUST also set `color`**: a border with no color throws inside the client's render loop and **permanently freezes every player's screen** on the last painted frame. There is **no `border.color`/`border.width` object** — `border: { color, width }` squishes to garbage. Outlined shape = `fill` (interior) + `color` (stroke) + `border` (numeric width).
 - Rectangles and arbitrary polygons via `POLYGON` cover ~95% of needs. `coordinates2d` is just a vertex list, so you can build **any polygon and rotate it with plain trig** — e.g. a ship triangle that points along an angle, or a round shape:
 
 ```js
@@ -357,7 +601,7 @@ const thickLine = (x1, y1, x2, y2, width) => {
 
 > When a game has **mirrored geometry** (a left and a right of anything), compute it with ONE helper like the above called twice with mirrored arguments — never as two copy-pasted trig blocks. See §15.1 for why this rule exists.
 
-- Transparent fill `[0,0,0,0]` + an `onClick` makes an invisible hit-box / button overlay (but see §9's hit-test rules — an invisible node still swallows clicks for things drawn beneath it). To **temporarily hide a node without removing it**, either set `fill` to `[0,0,0,0]` or set `playerIds = [0]` (visible to nobody — see §8); restore later.
+- Transparent fill `[0,0,0,0]` + an `onClick` makes an invisible hit-box / button overlay (but see §9's hit-test rules — an invisible node still swallows clicks for things drawn beneath it). Zeroing a node's size and fill (`rectangle(0,0,0,0)`, `[0,0,0,0]`) is how a **pooled effect node** idles between uses (§4.1) — that's the only "hide in place" case. Anything hidden for longer than an effect's off-beat should be **removed from the tree** instead: hidden nodes are still serialized and shipped on every dirty flush, and `playerIds = [0]` doesn't even reliably hide (it leaks to spectators and frame-less players — §8).
 - A `Shape` can also carry an `input` field (to act as an on-screen text box) and `onHover`/`offHover` callbacks — see §9.
 
 ### 7.2 `GameNode.Text`
@@ -381,7 +625,9 @@ Note the field is `textInfo` in the constructor, but it is stored on the node as
 
 > **No newlines, no wrapping.** The client draws each `Text` node with a single canvas `fillText` call: a `'\n'` in the string does NOT line-break (the whole thing renders as one line), and long text never wraps on its own. For multi-line text (instructions, "GAME OVER\nFinal Score" screens), create **one `Text` node per line** and space them vertically — line height in y-units is `size * (aspectX / aspectY)` (§5), so at `{16,9}` size-2.5 lines sit nicely ~5 y-units apart.
 
-> **Text nodes are NOT clickable.** Unlike `Shape` and `Asset`, the `Text` constructor only accepts `{ textInfo, playerIds, input, node, id }` — there is **no `onClick`, `onHover`, or `offHover`**. Passing an `onClick` to a `Text` node does nothing; it is silently dropped and the text will never respond to taps. **To make a clickable text label / "button", put the click handler on a `Shape` and render the `Text` on top of it** — see §7.2.1.
+> **Hard length cap: ~154 characters per Text node.** A Text node's wire subframe is length-limited; beyond ~154 characters (fewer with a long font name) the frame silently corrupts — the text truncates and other node fields break, with no error. Keep every Text node's string well under this (it's far more than fits on screen at readable sizes anyway); long passages are multiple nodes.
+
+> **Text nodes are NOT clickable.** On `squish-142` (the default) the `Text` constructor only accepts `{ textInfo, playerIds, input, node, id }` — `onClick`/`onHover`/`offHover` are silently dropped. On `squish-144` the constructor accepts them, but it makes no practical difference: the server's click hit-test only considers nodes with `coordinates2d`, which Text doesn't have, so a Text `onClick` is still unreachable. **To make a clickable text label / "button", put the click handler on a `Shape` and render the `Text` on top of it** — see §7.2.1.
 
 #### 7.2.1 Text is not a button — build buttons from a Shape + Text
 
@@ -435,8 +681,8 @@ const sprite = new GameNode.Asset({
             pos:  { x: 30, y: 35 },       // where the image's top-left sits, 0–100 space
             size: { x: 40, y: 30 }        // image width/height, 0–100 space
         }
-    },
-    playerIds: [0]
+    }
+    // playerIds omitted -> visible to everyone (§8); scope only genuinely private UI
 });
 ```
 
@@ -458,9 +704,9 @@ this.setTimeout(() => this.base.removeChild(sound.id), 250);
 
 The `assetInfo` key (`'potato'`, `'hiss'`) is a **reference to `metadata().assets`** — you do not embed image/audio bytes in the game; you reference them by the asset id declared in metadata.
 
-> **Audio is deduped by asset KEY, not by node.** The client tracks playing sounds per key: two nodes with the same key play one sound, and a sound only restarts after its key has been absent from at least one rendered frame — a remove + re-add in the same tick won't re-trigger it. For rapid re-fire SFX, remove the node and re-add it on a later tick (or after a short `setTimeout`). Also: players who mute sound in their settings simply never receive audio nodes — the platform handles that; games do nothing.
+> **Audio is deduped by asset KEY, not by node.** The client tracks playing sounds per key: two nodes with the same key play one sound, and a sound only restarts after its key has been absent from at least one rendered frame — a remove + re-add in the same tick won't re-trigger it, and a sound that finished playing won't replay while its node just sits in the tree. So the pattern is always **add to play, remove when done, re-add to replay**. Two platform behaviors games don't manage: browsers keep all audio silent until the player's first tap/click/keypress (autoplay policy — don't front-load a sound before any interaction), and players who mute sound in their settings simply don't get audio; games do nothing about either.
 
-### 7.3.1 Cropping an image / spritesheets (`squish-140`+)
+### 7.3.1 Cropping an image / spritesheets (`squish-139`+)
 
 An image `Asset` can show just a **rectangular sub-region** of its source image instead of the whole thing, via four optional fields inside `assetInfo[key]`:
 
@@ -496,7 +742,7 @@ this.sprite.node.asset = { 'sheet': { pos, size, ...frameCrop(this.frame, this.f
 this.base.node.onStateChange();
 ```
 
-> **Version gate:** cropping requires **`squish-140` or newer** — included in the default `142`. On `138`/`139` the crop fields are silently ignored (the image renders whole, no error).
+> **Version gate:** cropping requires **`squish-139` or newer** — included in the default `142`. On `138` and earlier the crop fields are silently ignored (the image renders whole, no error).
 
 ### 7.3.2 Sprite-with-shape-fallback — developing before the art lands
 
@@ -550,7 +796,7 @@ node.node.color = [r, g, b, Math.round(255 * lifeRemaining / lifeTotal)];
 this.base.node.onStateChange();
 ```
 
-Caveat: glow persists at full strength while a node fades via `color` alpha; set `effects = null` when starting a fade-out.
+The glow fades along with the node (the shadow is composited under the same per-node alpha), so no special handling is needed when fading a glowing node. This all applies to **`Asset` image nodes too**: their `color` alpha fades the image, and they honor `effects.shadow`.
 
 **The pooled-fade recipe** (hit splashes, expanding rings, attack flashes). Anything created with a translucent-looking fill like `[r, g, b, 110]` and never fixed will render **fully opaque** and look like a paint blob — a very common shipped bug because it's only wrong on screen, not in code. The working pattern: fill carries the hue at full alpha; `color` carries the fade. Setting `color` on a shape with no `border` is legal and does nothing *except* drive alpha — that's the whole trick:
 
@@ -573,25 +819,26 @@ Every node has `playerIds`, an array controlling who sees it. **Get these semant
 - `[]` (empty — the default when you omit `playerIds`) → **visible to all players.**
 - `[42]` → visible only to player `42`.
 - `[42, 99]` → visible to players `42` and `99`.
-- `[0]` → **visible to NOBODY** (player ids start at 1, so scoping to `0` hides the node from everyone). This is the standard trick for hiding a node without removing it — e.g. a JOIN button once everyone has joined.
+- `[0]` → scoped to a player id that never exists (real ids start at 1), so **no player's filtered frame includes it**. This exists so a per-player node's visibility set can go empty — it's what `hideFor` leaves behind when the last viewer is removed. It is **NOT a general "hide this node" switch**: the node is still serialized into the master state on every dirty flush, and any client that receives the *unfiltered* state — **any player with zero scoped nodes, and spectators in frameless sessions** (see the privacy caveat below) — receives it and **renders it on screen**. A node nobody should experience anymore doesn't get `[0]` — it gets **removed from the tree** (a JOIN button once everyone has joined is a `removeChild`, and its "joined" state is a variable).
 
 > **`playerIds` is VISIBILITY, not ownership — do NOT tag gameplay entities with their controller's id.** The most common generated-game bug: giving each player's ship/avatar `playerIds: [playerId]` "because it's theirs". That **hides every ship from every other player** — in multiplayer everyone sees an empty arena with enemies chasing invisible targets. Nodes need no player tag to be controlled by a player; input is already routed per player via the `playerId` argument to `handleKeyDown`/`onClick`. Leave shared-world entities (avatars, ships, bullets, enemies, pickups) **unscoped** (omit `playerIds` entirely), and scope only genuinely private UI: a hand of cards, a personal HUD, a "YOU" marker.
 >
-> Relatedly: **player ids are the numbers the server hands you** in `handleNewPlayer`/input handlers. Never invent or renumber them (e.g. `Object.keys(this.players).indexOf(id) + 1`) — ids are not dense, don't start at your join order, and a derived id scopes the node to the wrong player or to nobody.
+> Relatedly: **player ids are the numbers the server hands you** in `handleNewPlayer`/input handlers. Never invent or renumber them (e.g. `Object.keys(this.players).indexOf(id) + 1`) — ids are not dense, don't start at your join order, and a derived id scopes the node to the wrong player or to nobody. (For reference: hosted ids come from a 1–127 pool, with 128–255 reserved for relay-joined players; each connection's input is rate-limited to ~120 messages/sec.)
 
-Scoping applies to the **whole subtree**: children of a scoped node are only sent to that node's players (a child can narrow the set further with its own `playerIds`, but not widen it). For a scoped button, it's still good practice to set the same `playerIds` on both the shape and its label. Clicks respect scoping too — a node scoped away from a player can't be clicked by them (§9).
+Scoping applies to the **whole subtree**: keep a child's `playerIds` a **subset of its parent's** (same set, or narrower). A child scoped to a player *outside* its parent's set is a bug that half-works — the squisher will still put that child in the outside player's frame (rendered floating without its parent's visuals), but the click pipeline walks the tree top-down and stops at the parent, so that player can see it and never click it. For a scoped button, set the same `playerIds` on both the shape and its label. Clicks respect scoping — a node scoped away from a player can't be clicked by them (§9).
 
 This is how you build per-player UI (private hands, individual HUDs, "your turn" prompts) in a single shared game. Helpers on every node:
 
 ```js
 node.showFor(playerId);   // add a player to the visibility set (and drop a hiding 0)
 node.hideFor(playerId);   // remove a player; if none left, sets [0] (hidden from everyone)
-// or set directly, then notify:
-node.node.playerIds = [playerId];
+// CAREFUL: showFor/hideFor do NOT notify — like direct mutation, they need an
+// onStateChange() afterward or nothing changes on screen:
+node.node.playerIds = [playerId];   // (direct set, same deal)
 this.base.node.onStateChange();
 ```
 
-> **Privacy caveat (secrets games, frameless sessions):** the server builds a filtered frame only for players who appear in **at least one node's `playerIds`**. A connected player with **zero** nodes scoped to them falls back to the raw unfiltered state — i.e. **they receive everyone's "private" nodes**. In framed sessions the platform chrome scopes nodes per player, masking this; in frameless sessions (studio / direct play flows) it's live. If your game has real secrets (hidden words, private hands), give **every connected player** a persistent scoped node in `handleNewPlayer` — a zero-size invisible "privacy anchor" is enough:
+> **Privacy caveat (secrets games, frameless sessions):** the server builds a filtered frame only for connections that appear in **at least one node's `playerIds`**. A connected player with **zero** nodes scoped to them falls back to the raw unfiltered state — i.e. **they receive everyone's "private" nodes, and every `[0]`-"hidden" node too**. In framed sessions the platform chrome scopes a node to every player and spectator, masking this; in frameless sessions (studio / website hosted-play flows) it's live for players and spectators alike. If your game has real secrets (hidden words, private hands), give **every connected player** a persistent scoped node in `handleNewPlayer` — a zero-size invisible "privacy anchor" is enough:
 >
 > ```js
 > handleNewPlayer({ playerId }) {
@@ -644,6 +891,10 @@ const button = new GameNode.Shape({
 
 Clicks and taps are unified — `onClick` fires for both mouse and touch. Make tap targets generously sized for mobile.
 
+**What a HELD press does depends on the squish version:**
+- On **`squish-142`/`143`** (the default), a held pointer **re-fires `onClick` on the pressed node every ~30 ms** for as long as it's held. Held-tap "auto-repeat" is free (nice for hold-to-move buttons), but expensive `onClick` bodies get hammered — keep them cheap, or debounce with a tick counter.
+- On **`squish-144`+**, a press fires `onClick` **once**; while held, the client streams pointer moves that drive `game.handleMouseMove(playerId, {x, y})` and the pressed node's **`onDrag(playerId, x, y)`**; release fires the node's **`offClick(playerId, x, y)`** and `game.handleMouseUp(playerId, data)`. Releases are closed out robustly (off-canvas release, tab blur, the node being removed mid-drag) — this is the drag-and-drop API.
+
 #### 9.1 Click routing: the topmost node wins, clickable or not
 
 The server resolves a click to the **topmost node whose polygon contains the point** — draw order (parent before children, siblings in insertion order; later = on top). Crucially, **it does not skip non-clickable nodes**: if the topmost containing node has no `onClick`, the click is **silently dropped** — it does not fall through to a clickable node underneath. Two consequences:
@@ -674,7 +925,7 @@ this.base.addChildren(this.trailLayer, this.particleLayer, this.tapCatcher, this
 Also: `playerIds` scoping applies to clicks (a node hidden from a player can't be clicked by them — this is how per-player buttons work), and `Text` nodes never intercept clicks (no `coordinates2d`), so a button's label can't create a dead zone.
 
 ### Keyboard
-Implement `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)`. `key` is the standard browser key string: `'ArrowUp'`, `'ArrowDown'`, `'ArrowLeft'`, `'ArrowRight'`, `'w'`, `'a'`, `'s'`, `'d'`, `' '` (space), `'Enter'`, single characters, etc. The client forwards printable characters (`' '`–`'z'`, including capitals and digits), the arrow keys, `Backspace`, `Enter`, and `Meta` — nothing else. Support both arrows and WASD for movement.
+Implement `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)`. `key` is the standard browser key string: `'ArrowUp'`, `'ArrowDown'`, `'ArrowLeft'`, `'ArrowRight'`, `'w'`, `'a'`, `'s'`, `'d'`, `' '` (space), `'Enter'`, single characters, etc. The client forwards printable characters (`' '`–`'z'`, including capitals and digits), the arrow keys (plus `Home`), `Backspace`, `Enter`, and `Meta` — nothing else, and **no keys at all while Meta is held** (so OS shortcuts pass through). Support both arrows and WASD for movement.
 
 **How held keys actually arrive:** the client sends one `keydown` on the physical press, then **re-sends `keydown` every ~33ms while the key is held — with NO initial delay** — and sends a debounced `keyup` on release. This is ideal for movement (hold-to-move just works) and catastrophic for typing: a normal ~100ms keystroke delivers 3–4 duplicate `keydown`s, so naive `buffer += key` types `"hhhh"`.
 
@@ -712,7 +963,7 @@ The 400ms staleness check doubles as a safety net: if a `keyup` is ever lost, th
 
 ### Text input (on-screen fields)
 
-Besides clicks and keyboard there is a third input path: a node can present an **editable text field** via an `input` property. It is accepted on **`Shape` and `Text`** nodes (not `Asset`). The client renders an input box over the node's bounds; as the player edits it, the server calls your `oninput(playerId, value)` with the field's current contents:
+Besides clicks and keyboard there is a third input path: a node can act as a **text entry point** via an `input` property. It is accepted on **`Shape` and `Text`** nodes (not `Asset`). Tapping the node opens the browser's native **one-shot text prompt** (a modal — nothing is rendered inline over the node); when the player submits, your `oninput(playerId, value)` is called **once** with the full submitted string (cancelling sends nothing):
 
 ```js
 const searchBox = new GameNode.Shape({
@@ -729,10 +980,10 @@ const searchBox = new GameNode.Shape({
 });
 ```
 
-- `oninput` fires on change; treat `value` as the field's entire current string.
+- `oninput` fires once per submission; treat `value` as the field's entire submitted string, not a keystroke.
 - This is exactly the mechanism the Homegames dashboard's own search box uses, so it is the same well-trodden path the platform relies on.
-- Scope the field with `playerIds` (§8) so only the intended player sees and edits it — `input` is per node, but visibility still follows `playerIds`.
-- There is also `type: 'file'` for uploads (images and audio). Its handler is `oninput(playerId, bytes, meta)`: `bytes` is a **`Buffer`** (hosted sessions) or **`Uint8Array`** (local play) — array-like binary data, never a plain JS array — and `meta` is `{ kind, contentType, fileName }` where `kind` is `'image'`, `'audio'`, or `null` (sniffed server-side from the file's magic bytes — trust it over `contentType`, which is client-reported). Uploads are capped at 5 MB by the file picker (the server itself accepts up to 8 MB). To use an upload, wrap the bytes in an `Asset` typed by `meta.kind` and register it via the `addAsset` constructor option, then reference it from a `GameNode.Asset` as usual (audio plays while its node is in the tree):
+- Scope the field with `playerIds` (§8) so only the intended player sees it. Note that unlike clicks, `oninput` and hover events are routed by node id **without a server-side scope check** — visibility scoping is a rendering concern, not a security boundary, so validate inside the handler (check the `playerId` argument) if it matters who submits.
+- There is also `type: 'file'` for uploads (images and audio). Its handler is `oninput(playerId, bytes, meta)`: `bytes` is a **`Buffer`** (hosted sessions) or **`Uint8Array`** (local play) — array-like binary data, never a plain JS array — and `meta` is `{ kind, contentType, fileName }` where `kind` is `'image'`, `'audio'`, or `null` (sniffed from the file's magic bytes, falling back to the client-reported `contentType` prefix when sniffing fails — prefer checking `kind`, but treat all of `meta` as advisory). Uploads are capped at 5 MB by the file picker; oversized **images** are transparently re-encoded/shrunk to fit rather than rejected (animated GIFs flatten to their first frame), while oversized audio is rejected. The server itself accepts up to 8 MB. To use an upload, wrap the bytes in an `Asset` typed by `meta.kind` and register it via the `addAsset` constructor option, then reference it from a `GameNode.Asset` as usual (audio plays while its node is in the tree):
 
 ```js
 constructor({ addAsset }) {
@@ -757,7 +1008,7 @@ constructor({ addAsset }) {
 
 `Shape` and `Asset` nodes also accept `onHover(playerId)` and `offHover(playerId)` (pointer enter / leave). Use them only for cosmetic affordances — **touch devices have no hover**, so never gate a mechanic on it.
 
-> **Hover only fires on nodes the client considers interactive.** The hover handlers themselves are never sent to the client — it reports hover only for nodes it indexed as clickable (`onClick` present) or as inputs. A node with `onHover` but **no `onClick` and no `input` never receives hover events.** Give hover-only nodes a no-op `onClick: () => {}` to make them hoverable.
+> **Hover only fires on nodes the client considers interactive.** On `squish-142`/`143` the hover handlers themselves are never serialized — the client reports hover only for nodes it indexed as clickable (`onClick` present) or as inputs, so a node with `onHover` but **no `onClick` and no `input` never receives hover events**. Give hover-only nodes a no-op `onClick: () => {}` to make them hoverable (harmless on every version). On `squish-144`+ the presence of `onHover` is serialized and hover-only nodes work natively.
 
 ---
 
@@ -827,7 +1078,7 @@ assets: {
 
 - `ShapeUtils.rectangle(x,y,w,h)`, `ShapeUtils.triangle(...)` — vertex builders (§6).
 - `Colors.COLORS.*`, `Colors.randomColor(exclusions?)` — palette (§6).
-- `GeometryUtils.checkCollisions(root, node, filter?)` — returns nodes under `root` that overlap `node` (axis-aligned rectangle test). Optional `filter(node) => boolean` to limit candidates. Useful but simple; many games hand-roll AABB checks for control (see §14).
+- `GeometryUtils.checkCollisions(root, node, filter?)` — returns nodes under `root` that overlap `node` (axis-aligned rectangle test). Optional `filter(node) => boolean` to limit candidates — **always pass one**: with no filter, the tested node itself (and the root) are candidates, so an in-tree node "collides" with itself. Useful but simple; many games hand-roll AABB checks for control (see §14).
 - `ViewUtils.getView(plane, view, playerIds, translation?, scale?)` — projects a slice of a large world into the `0–100` viewport; optional `translation`/`scale` inset the projection into part of the screen (see §13 / §13.1).
 - `Shapes.POLYGON | LINE` — shape type enum (`CIRCLE` exists but is not rendered).
 - `Physics.getPath(...)` — **straight-line paths only** (no gravity, no arcs). For ballistics (artillery arcs, thrown objects), integrate yourself in `tick()`: `vy += GRAVITY; x += vx; y += vy;` with a few substeps per tick so fast projectiles don't tunnel through thin geometry.
@@ -840,6 +1091,8 @@ assets: {
 Everything above renders directly into the shared `0–100` plane, where every player sees the same thing. For games with a **world larger than one screen** (scrolling levels, top-down arenas, anything with a camera) or **per-player cameras** (each player sees their own region), extend **`ViewableGame`** instead of `Game`.
 
 `ViewableGame` gives you a large square **world plane** of size `planeSize × planeSize` (in its own world units), plus a separate **view root** that is what clients actually render. The rendered viewport is **always `0–100`** — you project a rectangular slice of the big world into that `0–100` viewport, per player. This is how you get cameras, scrolling, and split per-player views in one shared game.
+
+This is the §1 tree model made explicit: the world can be as large as you like **because it isn't what goes over the wire** — what ships is each player's projected view, exactly the slice they're currently experiencing. The same discipline applies at world scale: model the world in plain data (Approach B below makes this literal), and let nodes exist only where a camera is looking.
 
 ### Setup
 
@@ -987,9 +1240,9 @@ renderForPlayer(playerId) {
 ```
 
 Gotchas:
-- The projection includes only nodes that **overlap** the `view` rectangle (a collision test against the plane's children), so off-screen world content is free — but a node straddling the view edge has its vertices **clamped to `0–100` individually**, which can distort a shape that's half in and half out. Size views so content isn't sliced, or accept the clamp.
-- `getView` returns a brand-new subtree each call. To scroll or pan, rebuild that player's projection (`clearChildren()` + re-add, or swap the subtree) and `onStateChange()` — see the `panCamera` example above.
-- `onClick` survives projection (the clone keeps its handler), so projected world nodes stay tappable. But the clones cover the viewport, so a **tap-anywhere steering control needs a per-player tap-catcher drawn above the projected view** (§9.1) — an `onClick` on the player's backdrop node gets swallowed by the world clones on top of it.
+- The projection includes only nodes that **overlap** the `view` rectangle (a collision test against the plane's children), so off-screen world content is free — but a **Shape** straddling the view edge has its vertices **clamped to `0–100` individually**, which can distort a shape that's half in and half out (image **Assets** at the edge are handled: the projection auto-crops them instead of squashing). Size views so shapes aren't sliced, or accept the clamp.
+- `getView` returns a brand-new subtree each call (clones keep the source nodes' ids, so re-projection doesn't spam hover/press state). To scroll or pan, rebuild that player's projection (`clearChildren()` + re-add, or swap the subtree) and `onStateChange()` — see the `panCamera` example above.
+- **`onClick` survives projection for `Shape` nodes only** — `Asset` and `Text` clones silently DROP their `onClick`/`input` on the way through `getView`, so a clickable image in world space goes dead in every projected view. Make world-space tap targets Shapes (a transparent Shape over the Asset works), or handle taps with a per-player tap-catcher. And even for Shapes, the clones cover the viewport, so a **tap-anywhere steering control needs a per-player tap-catcher drawn above the projected view** (§9.1) — an `onClick` on the player's backdrop node gets swallowed by the world clones on top of it.
 - **`getView` overwrites `playerIds` on every clone** with the viewing player's id. World-space nodes cannot stay private through projection — a node scoped to player A in the world will still appear in player B's projected view if it's inside B's view rectangle. Keep per-player-secret UI in **screen space** (plain `0–100` nodes with `playerIds`), not in the world.
 - **Cost scales with visible nodes × players × ticks** — every camera update clones every node in view. Keep the world sparse (dozens of nodes in view, not hundreds), tick at 10–20, and prefer a camera-follow clamp like `view.x = clamp(shipX - 50, 0, WORLD - 100)`.
 
@@ -1220,7 +1473,7 @@ for (let col = 0; col < COLS; col++) {
 
 ### 15.1 Write code where a typo can't hide
 
-The validation sandbox runs your game for a few seconds but **never presses a key or clicks a button** (§2). Any code that only runs after input — key handlers, `onClick`s, everything behind a `gameStarted`/phase gate — ships unexecuted. When a generated game crashes in production, it is nearly always a `ReferenceError` in exactly that code, and nearly always from the same cause: **two near-identical copy-pasted blocks with a fleet of similar positional locals** (`leftPivotX`, `pivotY`, `leftTipX`, `leftTipY`, `leftX1`, `leftY2`, `rightX1`, ...) where one block references a name that was never defined (`leftPivotY` in a scope that only has `pivotY`). The variable soup makes the typo invisible to a re-read, and the input gate makes it invisible to the sandbox. Three rules:
+The validation sandbox simulates a little play (§2) — but **exceptions inside input handlers are logged as warnings, not failures**, and anything behind a second-layer gate (a submenu, a game-over screen, a specific key combo) may never execute at all. So a broken `onClick` or key handler still ships. When a generated game crashes in production, it is nearly always a `ReferenceError` in exactly that under-exercised code, and nearly always from the same cause: **two near-identical copy-pasted blocks with a fleet of similar positional locals** (`leftPivotX`, `pivotY`, `leftTipX`, `leftTipY`, `leftX1`, `leftY2`, `rightX1`, ...) where one block references a name that was never defined (`leftPivotY` in a scope that only has `pivotY`). The variable soup makes the typo invisible to a re-read, and the input gate makes it invisible to the sandbox. Three rules:
 
 1. **Mirrored or repeated geometry comes from ONE helper called N times — never from duplicated blocks.** Left/right chopsticks, two paddles, four walls, per-player HUDs: write the math once (like `thickLine` in §7.1), call it with mirrored arguments. Fewer variable names means fewer chances to typo one, and the single implementation gets exercised on every path instead of hiding a broken copy.
 
@@ -1245,8 +1498,8 @@ Put **every gameplay number** in one `TUNING` object at the top of the file, dir
 const TUNING = {
     DIFFICULTY: 1.0,
     ROUND_SECONDS: 40,
-    TICK: 20,          // MUST match metadata() literal (§5, the two-literals rule)
-    MAX_PLAYERS: 4,    // MUST match metadata() literal
+    TICK: 20,          // safe to reference from metadata(): tickRate is runtime-read (§5)
+    MAX_PLAYERS: 4,    // same — maxPlayers may be TUNING.MAX_PLAYERS in metadata()
 
     PLAYER:  { hp: 3, speed: 0.95, invulnTicks: 26 },
     START:   { money: 5, inv: { water: 100, sugar: 50 } },
@@ -1278,22 +1531,36 @@ require('squish-142')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, Geometr
 
 Runtime:      one game class (entry index.js; split across as many local files as you like), two homes —
               hosted Node session (multiplayer) or browser LocalSession (instant play / offline download;
-              exactly one player, id 1, stubbed saveGame/services, frameless). Identical contract —
-              never detect or branch on which.
+              exactly one player, id 1, stubbed services, frameless). Identical contract —
+              never detect or branch on which. saveGame/saveData work in BOTH (§3):
+              saveGame(json) -> Promise (debounced, ≤1 MB), saveData = loaded save or undefined
+              (UNTRUSTED — validate every field); saveCompatibility: [...versionIds] in metadata()
+              accepts older versions' saves.
 metadata():   pure OBJECT LITERAL — statically parsed (never executed) to decide play modes.
               services: ['multiplayer'] -> "Play with friends" hosted sessions + shareable link;
               omit services -> single-player instant play + downloadable offline HTML file;
               'contentGenerator' -> REMOVES local play/downloads (server-only service).
               maxPlayers: N -> session capacity (default 64); the only capacity mechanism
               (no canAddPlayer hook is called by the runtime).
-              values shared with game logic (tickRate/maxPlayers) must be DUPLICATED literals —
-              mirror your TUNING const with "keep in sync" comments at BOTH ends (§5)
+              LITERAL fields (statically parsed): squishVersion, name, services, assets, thumbnail —
+              publish REJECTS non-literal squishVersion/name. tickRate/maxPlayers are runtime-read
+              and MAY derive from TUNING (§5). tickRate 1-120 when present.
 Dead hooks:   no duck-typed lifecycle — a method the runtime doesn't document calling
-              (canAddPlayer, getAssets, ...) is dead code that LOOKS load-bearing: delete it (§3)
+              (canAddPlayer, ...) is dead code that LOOKS load-bearing: delete it (§3).
+              (Exception: getAssets() IS merged into the hosted asset bundle — but declare
+              assets in metadata anyway; the static parser only sees the literal.)
 
 Game hooks:   metadata() [static, required] · constructor()->super() · getLayers()->[{root}]
               handleNewPlayer({playerId,info,settings,clientInfo}) · handlePlayerDisconnect(playerId)
               handleKeyDown(playerId,key) · handleKeyUp(playerId,key) · tick() · close()
+              handleMouseMove(pid,{x,y}) · handleMouseUp(pid,data) · handleGamepadInput(pid,input)
+              handlePlayerUpdate(pid,{info,settings})   // rename / settings change
+
+Tree model:   the tree IS the wire payload — nodes are ONLY what players currently see/hear/touch;
+              all other game state (decks, upcoming waves, hidden words, off-screen entities) lives in
+              plain instance variables and becomes nodes when experienced, removeChild when done (§1, §4.1).
+              There is NO "keep it in the tree but hidden" optimization: hidden nodes squish+ship like
+              visible ones, and playerIds=[0] still renders for spectators/frame-less players (§8)
 
 Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, onClick, effects, playerIds })  // clickable
               border = NUMBER (outline width), NOT an object; stroke uses `color` -> set both. fill=interior.
@@ -1304,7 +1571,7 @@ Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, on
               image drawn from assetInfo pos/size; clicks hit coordinates2d -> keep them aligned (§7.3)
               audio = zero-size Asset; add to tree = play, remove = stop; deduped by KEY — the key must
               leave a frame before it re-triggers (§7.3). never invent asset ids: no assets -> shapes/text.
-              Asset crop (squish-140+): assetInfo.key.{cropLeft,cropTop,cropRight,cropBottom} = % inset per edge -> spritesheets (§7.3.1)
+              Asset crop (squish-139+): assetInfo.key.{cropLeft,cropTop,cropRight,cropBottom} = % inset per edge -> spritesheets (§7.3.1)
 Button:       no button node + Text isn't clickable -> clickable Shape (onClick) with a Text node on top (§7.2.1)
 
 Tree ops:     n.addChild(c) · n.addChildren(a,b) · n.removeChild(id) · n.clearChildren([keepIds])
@@ -1312,12 +1579,16 @@ Tree ops:     n.addChild(c) · n.addChildren(a,b) · n.removeChild(id) · n.clea
 NOTIFY:       n.node.onStateChange()   // after direct field mutation; tree ops notify for you
 Cost:         every notify re-squishes + re-broadcasts the WHOLE tree to every player (bursts coalesce
               into one flush per turn) -> notify once per tick, ONLY when changed; POOL particle/trail/
-              bullet nodes (create once in constructor, mutate, hide with zero-size + fill [0,0,0,0]) —
-              never addChild/removeChild per tick; glow a few focal nodes only (shadowBlur is expensive) (§4.1)
+              bullet nodes (create once, mutate, idle at zero-size + fill [0,0,0,0]) — never addChild/
+              removeChild per tick. Pooling = high-frequency fx ONLY; structural moments (menus, rounds,
+              screens) add/remove nodes normally — one cheap notify, smaller flushes after (§4.1);
+              glow a few focal nodes only (shadowBlur is expensive)
 Env:          Node on the server — NO window/document/location/alert; "play again" = reset state in place,
               never location.reload() (§1)
 tick():       starts at construction, fires on menus too -> gate on phase; create every node tick()
               touches in the constructor (a throw in tick = crashed session = rejected) (§10)
+              defining tick() with NO tickRate runs it at a DEFAULT 60 fps — event-driven games
+              must not define tick() at all; tick games always declare tickRate (§3, §5)
               re-check phase BETWEEN subsystems too — any damage call can gameOver() mid-tick and the
               rest of the tick runs against torn-down state (§10)
 
@@ -1327,14 +1598,18 @@ Colors:       Colors.COLORS.RED ... ([r,g,b,a] 0..255) · Colors.randomColor(['B
               channels are raw bytes: out-of-range WRAPS (alpha 400 -> 144) -> clamp computed values (§6)
               ONLY the ~100 names listed in §6 exist — an invented name = undefined = invisible shape (no error)
 Text limits:  '\n' does NOT line-break (single fillText call) -> one Text node per line (§7.2)
-Typo safety:  sandbox never presses keys/clicks -> mirrored geometry = ONE helper called twice (thickLine, §7.1);
+              hard cap ~154 chars per Text node — beyond that the frame silently corrupts (§7.2)
+Typo safety:  validation pokes inputs but handler throws are WARNINGS only (tick/join throws are
+              fatal) -> mirrored geometry = ONE helper called twice (thickLine, §7.1);
               init fields you'll test (captured: false); hand-trace every gated handler before output (§15.1)
 Off-plane:    coords clamp to [0,255] on the wire — negatives pin to 0 (no off-screen left/top);
               100..255 = off right/bottom; enter from left/top by spawning AT the edge moving inward;
               walk-ons: keep pos in plain vars, hide node until FULLY on-plane (x >= half-width) (§6)
 Aspect:       plane is 0..100 but stretched to aspectRatio -> use {1,1} for circles/orbits/true angles (§5)
               text height in y-units = size * (aspectX/aspectY); square rect: h = w * (x/y) (§5)
-Hide a node:  playerIds = [0] (nobody) or fill [0,0,0,0]
+"Hiding":     done-with content comes OUT of the tree (removeChild + state in variables) — zero-size +
+              fill [0,0,0,0] is only how POOLED fx idle between uses; playerIds=[0] is what hideFor
+              leaves when a scoped node's viewer set empties, NOT a hide switch (leaks to spectators, §8)
 Fade a node:  animate `color` alpha (fill alpha is opaque for any value >= 1); pooled fx recipe:
               fill = solid hue, color = [255,255,255,a] — a translucent-looking fill ([r,g,b,110])
               renders as an opaque paint blob (§7.4)
@@ -1343,21 +1618,30 @@ Sprites:      shape-fallback hybrid: ONE factory + ONE placeSprite() for all pla
               placeholder chrome self-hides behind if(node._sprite) (§7.3.2)
 Tuning:       every gameplay number in ONE TUNING object; alias into old const names; pools sized FROM
               tuning counts + formulas clamp to pool caps; copy config objs (Object.assign), never alias;
-              difficulty knob scales counts/hp/tempo, NOT speed/behavior (§15.2, two-literals rule §5)
+              difficulty knob scales counts/hp/tempo, NOT speed/behavior; tickRate/maxPlayers may
+              derive from TUNING but squishVersion/name/services/assets must stay literals (§15.2, §5)
 onClick:      (playerId, x, y) => {}    // Shape/Asset only
+Held press:   142/143: onClick RE-FIRES ~every 30ms while held (keep handlers cheap);
+              144+: one onClick, then node onDrag(pid,x,y) + game handleMouseMove while held,
+              node offClick(pid,x,y) + game handleMouseUp on release (§9)
 Click routing: topmost CONTAINING node wins, clickable or not -> containers must be rectangle(0,0,0,0);
               full-screen taps need a tap-catcher above the playfield, below the buttons (§9.1)
+              oninput/hover are routed by node id with NO server-side scope check -> validate the
+              playerId inside the handler when it matters (§9)
 text input:   Shape/Text input:{ type:'text', oninput:(playerId, value)=>{} }  // MODAL prompt; one-shot entry
 file upload:  input:{ type:'file', oninput:(playerId, bytes, meta)=>{} }  // bytes = Buffer/Uint8Array (<=5MB),
               meta = { kind:'image'|'audio'|null, contentType, fileName }; register via addAsset (§9)
 Live typing:  held keys re-send keydown every ~33ms with NO delay -> gate them like an OS keyboard:
               fresh press (not seen >400ms) types instantly; held repeats after 450ms at ~18cps (§9 Keyboard)
 hover:        Shape/Asset onHover(pid) / offHover(pid)   // cosmetic only; no hover on touch;
-              only fires on nodes with onClick or input — hover-only nodes need a no-op onClick (§9)
-playerIds:    [] / omitted = everyone (default) · [id,...] = only those · [0] = NOBODY (hide)
+              on 142/143 only fires on nodes with onClick or input — hover-only nodes need a
+              no-op onClick (native on 144+) (§9)
+playerIds:    [] / omitted = everyone (default) · [id,...] = only those · [0] = no live player
+              (still squished + shipped to unfiltered receivers — not a hide mechanism, see "Hiding")
               VISIBILITY, not ownership: leave avatars/ships/bullets UNSCOPED or other players can't
               see them; input already routes per player via handler args; never derive ids from indices (§8)
-              scoping covers the subtree; players with NO scoped nodes get the UNFILTERED state ->
+              child scopes must be a SUBSET of the parent's (outside scope = rendered parentless,
+              unclickable); players with NO scoped nodes get the UNFILTERED state ->
               secrets games: per-player zero-size privacy anchor + scoped "YOU" markers (§8)
 
 Rounds:       last-man-standing must special-case solo (1 player alive at spawn != winner) — require >=2
@@ -1373,5 +1657,7 @@ Big worlds:   extend ViewableGame · super(planeSize) · getPlane()/getPlaneSize
               getViewRoot() = render root (starts EMPTY) · getLayers()->[{root:getViewRoot()}]
               ViewUtils.getView(plane,{x,y,w,h},[pid], translation?, scale?) projects a world slice into 0..100
                 translation={x,y,filter?} scale={x,y} -> inset the projection (static frame + scroll region, §13.1)
+                clones keep onClick for SHAPES ONLY (Asset/Text clones drop handlers) and always
+                get the viewing player's playerIds — no private world-space nodes (§13.1)
 ```
 

@@ -34,7 +34,9 @@ const DEFAULT_CONFIG = {
     "LINK_PROXY_URL": "wss://public.homegames.link:81",
     "LINK_URL": "wss://homegames.link",
     "MAP_ENABLED": true,
-    "CHILD_SESSION_MEMORY_LIMIT": "196m"
+    "CHILD_SESSION_MEMORY_LIMIT": "196m",
+    "SAVE_FILES_ENABLED": true,
+    "DASHBOARD_PAGE_SIZE": 6
 };
 
 // ---------------------------------------------------------------------------
@@ -159,29 +161,67 @@ const getConfigValue = (key, _default = undefined) => {
 
 let cachedConfig = {};
 
+// The user's writable config overlay. Base config (the repo's config.json)
+// provides defaults; keys written here — e.g. from the dashboard's settings
+// section — override them. Kept separate from the base so upgrades can change
+// shipped defaults without clobbering user choices.
+const userConfigFile = () => path.join(getAppDataPath(), 'config.json');
+
+const readUserConfig = (file = userConfigFile()) => {
+    try {
+        if (fs.existsSync(file)) {
+            return JSON.parse(fs.readFileSync(file));
+        }
+    } catch (e) {
+        log.error(`Unable to read user config at ${file}`);
+        log.error(e);
+    }
+    return {};
+};
+
 const getConfig = () => {
     if (Object.keys(cachedConfig).length > 0) return cachedConfig;
 
-    const options = [getAppDataPath(), process.cwd()];
+    // Base config: the running package's config.json (defaults).
+    const options = [process.cwd()];
     try { options.push(path.dirname(require.main.filename)); } catch (e) {}
     try { options.push(path.dirname(process.mainModule.filename)); } catch (e) {}
     options.push(__dirname);
 
-    let _config = null;
+    let base = null;
     for (let i = 0; i < options.length; i++) {
         try {
             if (fs.existsSync(`${options[i]}/config.json`)) {
                 log.info(`Found config at ${options[i]}`);
-                _config = JSON.parse(fs.readFileSync(`${options[i]}/config.json`));
+                base = JSON.parse(fs.readFileSync(`${options[i]}/config.json`));
                 break;
             }
         } catch (e) {}
     }
 
-    if (!_config) _config = DEFAULT_CONFIG;
+    if (!base) base = DEFAULT_CONFIG;
 
-    cachedConfig = _config;
-    return _config;
+    // User overrides win over base, key by key (previously the first file
+    // found — including a possibly-sparse app-data config — fully shadowed
+    // everything else).
+    cachedConfig = Object.assign({}, base, readUserConfig());
+    return cachedConfig;
+};
+
+// Persist one key to the user config overlay and invalidate the cache so the
+// running process sees the new value on its next read. Values that require a
+// listener/module reload (ports, page size, HTTPS serving) still need a
+// restart — callers surface that.
+const setConfigValue = (key, value, file = userConfigFile()) => {
+    const overrides = readUserConfig(file);
+    overrides[key] = value;
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(file, JSON.stringify(overrides, null, 4));
+    cachedConfig = {};
+    log.info(`Set config value ${key} in ${file}`);
 };
 
 // ---------------------------------------------------------------------------
@@ -192,6 +232,7 @@ const gameLoader = require('./game-loader');
 const dockerHelper = require('./docker-helper');
 const GameSession = require('./game-session');
 const GameSessionManager = require('./game-session-manager');
+const saveGames = require('./save-games');
 
 const getHash = (input) => {
     return crypto.createHash('md5').update(input).digest('hex');
@@ -202,10 +243,11 @@ const getHash = (input) => {
 // Exports
 // ---------------------------------------------------------------------------
 
-// Canonical squish.js authoring guide — the single source of truth for every
-// consumer (the LLM worker, the studio "copy LLM context" feature, repo docs).
-// Read the text with getAuthoringDoc(), or hand a child process authoringDocPath.
-const AUTHORING_DOC_PATH = path.join(__dirname, 'docs', 'squishjs-game-authoring.md');
+// Canonical Homegames LLM context doc (platform reference + squish.js authoring
+// contract in one file) — the single source of truth for every consumer (the
+// LLM worker, the studio "copy LLM context" feature, repo docs). Read the text
+// with getAuthoringDoc(), or hand a child process authoringDocPath.
+const AUTHORING_DOC_PATH = path.join(__dirname, 'docs', 'homegames-context.md');
 const getAuthoringDoc = () => fs.readFileSync(AUTHORING_DOC_PATH, 'utf-8');
 
 module.exports = {
@@ -213,6 +255,8 @@ module.exports = {
     guaranteeDir,
     getUrl,
     getConfigValue,
+    getConfig,
+    setConfigValue,
     log,
     getAppDataPath,
     getHash,
@@ -232,4 +276,7 @@ module.exports = {
     // Sessions
     GameSession,
     GameSessionManager,
+
+    // Save games (file + broadcast backends, envelope helpers)
+    saveGames,
 };

@@ -269,41 +269,46 @@ const validateGame = async ({
         // Wait for the container to exit, with a timeout.
         const waitPromise = container.wait();
         const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Validation timed out')), timeoutMs)
+            setTimeout(() => reject(new Error(`Validation timed out after ${timeoutMs}ms`)), timeoutMs)
         );
 
         let exitResult;
         try {
             exitResult = await Promise.race([waitPromise, timeoutPromise]);
         } catch (err) {
-            // Timed out — kill and remove
+            // Timed out — kill, grab whatever it logged for diagnostics, remove.
             try { await container.stop({ t: 0 }); } catch (_) {}
+            let tail = '';
+            try {
+                const logs = await container.logs({ stdout: true, stderr: true, follow: false });
+                const output = demuxDockerLogs(logs);
+                tail = (output.stderr || output.stdout || '').trim().slice(-500);
+            } catch (_) {}
             try { await container.remove({ force: true }); } catch (_) {}
-            return { success: false, error: err.message || 'Container timeout' };
+            return {
+                success: false,
+                error: (err.message || 'Container timeout') + (tail ? ` — last output: ${tail}` : ''),
+            };
         }
 
-        // Collect stdout logs (validate.js writes JSON to stdout).
+        // Collect logs. validate.js reserves stdout for a single result line
+        // prefixed with a marker; everything else (game logs) is on stderr.
         const logs = await container.logs({ stdout: true, stderr: true, follow: false });
         const output = demuxDockerLogs(logs);
 
         // Remove the container (equivalent of --rm).
         try { await container.remove(); } catch (_) {}
 
-        if (!output.stdout) {
-            return {
-                success: false,
-                error: output.stderr ? output.stderr.trim().slice(-500) : 'No output from validation',
-            };
-        }
+        const result = parseValidationResult(output.stdout);
+        if (result) return result;
 
-        try {
-            return JSON.parse(output.stdout.trim());
-        } catch (parseErr) {
-            return {
-                success: false,
-                error: `Failed to parse validation output: ${output.stdout.slice(0, 200)}`,
-            };
-        }
+        const detail = (output.stderr || output.stdout || '').trim().slice(-500);
+        return {
+            success: false,
+            error: detail
+                ? `No validation result from container — last output: ${detail}`
+                : 'No output from validation',
+        };
     } catch (err) {
         // If container was created but we error out, try to clean up.
         if (container) {
@@ -365,6 +370,52 @@ const parseCpuLimit = (cpu) => {
     const value = parseFloat(cpu);
     if (isNaN(value) || value <= 0) return 1e9;
     return Math.round(value * 1e9);
+};
+
+/**
+ * Parse the validation result out of a container's stdout.
+ *
+ * Preferred format: a line prefixed with __HG_VALIDATE_RESULT__ followed by
+ * JSON (game log noise on stdout can never be confused with the result).
+ * Falls back to parsing the last JSON-looking line, then the whole stdout,
+ * for images built from older validate.js. Returns null if nothing parses.
+ */
+const VALIDATION_RESULT_MARKER = '__HG_VALIDATE_RESULT__';
+
+const parseValidationResult = (stdout) => {
+    if (!stdout) return null;
+
+    const lines = stdout.split('\n').map(l => l.trim()).filter(Boolean);
+
+    // Marker line (search from the end — it's written last).
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const idx = lines[i].indexOf(VALIDATION_RESULT_MARKER);
+        if (idx !== -1) {
+            try {
+                return JSON.parse(lines[i].slice(idx + VALIDATION_RESULT_MARKER.length));
+            } catch (_) {
+                return null; // marker present but corrupt — don't trust fallbacks
+            }
+        }
+    }
+
+    // Legacy: last line that parses as a JSON object.
+    for (let i = lines.length - 1; i >= 0; i--) {
+        if (lines[i].startsWith('{')) {
+            try {
+                const parsed = JSON.parse(lines[i]);
+                if (parsed && typeof parsed.success === 'boolean') return parsed;
+            } catch (_) {}
+        }
+    }
+
+    // Legacy: entire stdout is the JSON result.
+    try {
+        const parsed = JSON.parse(stdout.trim());
+        if (parsed && typeof parsed.success === 'boolean') return parsed;
+    } catch (_) {}
+
+    return null;
 };
 
 /**

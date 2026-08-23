@@ -20,6 +20,7 @@ const os = require('os');
 
 const { isDockerAvailable, isImageBuilt, ensureImage, runGameContainer, stopContainer, isContainerRunning, parseMemoryString } = require('./docker-helper');
 const { squishMap, DEFAULT_SQUISH_VERSION, fetchGameFromForgejo, loadGameClassFromPath, detectSquishVersion, parseSquishVersion } = require('./game-loader');
+const { sanitizeSaveKey, MAX_SAVE_DATA_BYTES } = require('./save-games');
 
 // ---------------------------------------------------------------------------
 // Port pool
@@ -94,6 +95,8 @@ class GameSessionManager {
         this.certPath = opts.certPath || null;
         // Port Homenames listens on, so Docker sessions can reach it on the host.
         this.homenamesPort = opts.homenamesPort || null;
+        // Fork opt-in override; null = read FORK_SESSIONS_ENABLED per launch.
+        this.allowFork = opts.allowFork !== undefined ? opts.allowFork : null;
         this.log = opts.log || { info: console.log, error: console.error };
 
         // Memory limit for child game sessions. A single Docker-style string
@@ -113,14 +116,17 @@ class GameSessionManager {
 
     /**
      * Determine whether Docker is available and the image is ready.
-     * Caches the result after first call.
+     * A successful probe is cached; failures re-probe on the next call.
      */
     async _ensureDockerReady() {
-        if (this._dockerChecked) return this._dockerOk;
-        this._dockerChecked = true;
+        // Memoize only SUCCESS: a user who starts Docker after boot must be
+        // able to retry a session launch without restarting this process
+        // (matters especially now that fork is opt-in). Negative probes are
+        // cheap relative to a session launch, so re-checking is fine.
+        if (this._dockerChecked && this._dockerOk) return true;
 
         if (!(await isDockerAvailable())) {
-            this.log.info('Docker not available — sessions will use fork()');
+            this.log.info('Docker not available — checking again on the next session start');
             this._dockerOk = false;
             return false;
         }
@@ -143,6 +149,9 @@ class GameSessionManager {
                 this.log.info('Docker available but no homegames-runner image. Specify dockerImageDir to build it. Using fork().');
             }
         }
+
+        // Only a successful probe is final (see note at the top).
+        this._dockerChecked = this._dockerOk;
 
         return this._dockerOk;
     }
@@ -177,6 +186,15 @@ class GameSessionManager {
         const sessionId = ++sessionIdCounter;
         const useDocker = await this._ensureDockerReady();
 
+        // Fork runs game code with no isolation, so it's opt-in
+        // (FORK_SESSIONS_ENABLED, toggleable live from the dashboard settings —
+        // read per launch, so no restart needed). Without Docker and without
+        // the opt-in, session starts fail loudly instead of silently forking.
+        if (!useDocker && !this._forkAllowed()) {
+            this.portPool.release(port);
+            throw new Error('Fork sessions are disabled and Docker is not running. Start Docker, or enable "Allow fork for child sessions" in settings.');
+        }
+
         try {
             if (useDocker) {
                 return await this._startDockerSession(sessionId, port, input, opts);
@@ -187,6 +205,54 @@ class GameSessionManager {
             this.portPool.release(port);
             throw err;
         }
+    }
+
+    // Whether fork-based (non-Docker) sessions are allowed. Constructor opt
+    // wins (tests / embedders); otherwise the config value, re-read on every
+    // launch so a settings toggle applies immediately.
+    _forkAllowed() {
+        if (this.allowFork !== null) return this.allowFork;
+        const { getConfigValue } = require('./index');
+        return getConfigValue('FORK_SESSIONS_ENABLED', false) === true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Save-game options for a new session.
+    //
+    // File backend (SAVE_FILES_ENABLED, default): saves live in a stable
+    // per-game directory — <saveDataRoot>/<gameKey>/ — with one version
+    // subdirectory per game version, shared by every session of that game on
+    // both the docker and fork paths. Sessions without a gameKey (raw-code
+    // Studio previews) get no save support.
+    //
+    // Broadcast backend (SAVE_FILES_ENABLED=false): nothing on disk. The
+    // creating client's save (input.clientSave, an envelope) is validated for
+    // size here and passed through to the child, which enforces version
+    // compatibility before the game sees it.
+    // -----------------------------------------------------------------------
+    _resolveSaveOptions(input) {
+        const { getConfigValue } = require('./index');
+        const savesEnabled = getConfigValue('SAVE_FILES_ENABLED', true) !== false;
+
+        const saveDataPath = (savesEnabled && input.gameKey)
+            ? path.join(this.saveDataRoot, sanitizeSaveKey(input.gameKey))
+            : null;
+
+        let clientSave = null;
+        if (!savesEnabled && input.clientSave && typeof input.clientSave === 'object') {
+            try {
+                if (Buffer.byteLength(JSON.stringify(input.clientSave), 'utf8') <= MAX_SAVE_DATA_BYTES + 1024) {
+                    clientSave = input.clientSave;
+                }
+            } catch (e) {}
+        }
+
+        return {
+            savesEnabled,
+            saveDataPath,
+            versionId: input.versionId || null,
+            clientSave,
+        };
     }
 
     // -----------------------------------------------------------------------
@@ -245,8 +311,9 @@ class GameSessionManager {
             throw new Error('startSession requires one of: code, gamePath, or versionId');
         }
 
-        // Save data directory for this game
-        const saveDataPath = path.join(this.saveDataRoot, `session-${sessionId}`);
+        // Save-game wiring: per-game save dir (mounted at /app/save) when the
+        // file backend is on; broadcast-mode env otherwise.
+        const { savesEnabled, saveDataPath, versionId, clientSave } = this._resolveSaveOptions(input);
 
         // Pass host config to the container so it can reach the local API,
         // API_URL is used by Asset.js for downloading game assets.
@@ -275,6 +342,23 @@ class GameSessionManager {
         const controlSecret = require('./index').getConfigValue('HOMENAMES_API_SECRET', '');
         if (controlSecret) {
             extraEnv.HOMENAMES_API_SECRET = String(controlSecret);
+        }
+
+        // Save-game context for the container. GAME_VERSION_ID keys the version
+        // subdirectory inside the /app/save mount; SAVES_ENABLED=false switches
+        // the child to the broadcast backend, with the creating client's save
+        // (if any) delivered as a base64 envelope.
+        extraEnv.SAVES_ENABLED = savesEnabled ? 'true' : 'false';
+        if (input.gameKey) {
+            // Without this the child keys saves off basename(GAME_PATH) —
+            // usually just "index" — which collides across games.
+            extraEnv.GAME_KEY = String(input.gameKey);
+        }
+        if (versionId) {
+            extraEnv.GAME_VERSION_ID = String(versionId);
+        }
+        if (clientSave) {
+            extraEnv.CLIENT_SAVE_DATA = Buffer.from(JSON.stringify(clientSave)).toString('base64');
         }
 
         const { containerId } = await runGameContainer({
@@ -423,6 +507,9 @@ class GameSessionManager {
 
             this._attachForkLogForwarding(child);
 
+            // Save-game context — same semantics as the docker env vars
+            const { savesEnabled, saveDataPath, versionId, clientSave } = this._resolveSaveOptions(input);
+
             child.send(JSON.stringify({
                 key: input.gameKey || path.basename(gamePath, '.js'),
                 squishVersion,
@@ -432,6 +519,10 @@ class GameSessionManager {
                 username: this.username,
                 certPath: this.certPath,
                 noFrame: input.noFrame || false,
+                savesEnabled,
+                saveDataPath,
+                versionId,
+                clientSave,
             }));
 
             const session = {
@@ -614,10 +705,13 @@ class GameSessionManager {
                     return;
                 }
 
-                // Check player count — stop container if empty past grace period
+                // Check occupancy — stop container if empty past grace period.
+                // Spectators count: a session people are watching is not empty.
                 try {
                     const healthData = await this._querySessionHealth(s.port);
-                    const playerCount = healthData && healthData.playerCount !== undefined ? healthData.playerCount : -1;
+                    const playerCount = healthData && healthData.playerCount !== undefined
+                        ? healthData.playerCount + (healthData.spectatorCount || 0)
+                        : -1;
                     if (playerCount === 0) {
                         s._emptyTicks++;
                         const emptyMs = s._emptyTicks * this.lifecycleCheckMs;

@@ -9,7 +9,7 @@
 > - **DATA-MODEL.md** — MongoDB collections, Forgejo repos, the asset store, identity
 > - **INFRA.md** — what physically runs where, domains, secrets inventory
 > - **OPERATIONS.md** — deploy/update/restart, logs, backups, failure playbook
-> - **squishjs-game-authoring.md** — the contract for writing games (also fed to the LLM)
+> - **homegames-context.md** — master LLM context: platform reference + the contract for writing games
 
 ---
 

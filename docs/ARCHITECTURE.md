@@ -31,7 +31,7 @@ from.
   which package both server and client use. **Image cropping / spritesheets
   require `squish-140`+.**
 
-Authoring contract: **squishjs-game-authoring.md** (this folder).
+Authoring contract: **homegames-context.md**, Part II (this folder).
 
 ---
 
@@ -158,7 +158,7 @@ Runs on the Mac Studio (MLX needs Apple Silicon).
   `LLM_WORKER_SECRET`).
 - `llm/model_server.py` (MLX) — holds a warm code model (Qwen2.5-Coder), prefills
   the **authoring guide** as the system prompt (resolved from `homegames-common`
-  via `AUTHORING_DOC_PATH`), rewrites a game's `index.js` from a natural-language
+  via `CONTEXT_DOC_PATH`), rewrites a game's `index.js` from a natural-language
   request, with validation-error retry.
 - The result is dropped into the Studio editor as an unsaved change for the user
   to review and save.

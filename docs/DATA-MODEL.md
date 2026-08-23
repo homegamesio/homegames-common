@@ -102,7 +102,7 @@ The **binary asset store**: `developerId`, `assetId`, `data` (BSON `Binary`),
 ## squish wire format (on the wire, not stored)
 
 Transient binary frames between homegames-core and the browser. Full spec +
-authoring rules: **squishjs-game-authoring.md**. In brief:
+authoring rules: **homegames-context.md** (Part II). In brief:
 
 - A game's scene = a tree of `Shape`/`Text`/`Asset` nodes in 0–100 space.
 - `squish()` encodes each node as `[3, len…, classCode, …sub-frames]`; each
