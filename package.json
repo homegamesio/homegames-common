@@ -21,7 +21,6 @@
     "decompress": "^4.2.1",
     "squish-142": "npm:squishjs@1.4.2",
     "squish-143": "npm:squishjs@1.4.3",
-    "squish-144": "npm:squishjs@1.4.4",
     "squish-145": "npm:squishjs@1.4.5",
     "dockerode": "^4.0.10",
     "tar": "^7.0.0",
