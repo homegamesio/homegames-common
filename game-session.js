@@ -20,6 +20,7 @@
  */
 
 const WebSocket = require('ws');
+const GameDispatcher = require('./game-dispatch');
 const { squishMap, DEFAULT_SQUISH_VERSION } = require('./game-loader');
 const { MAX_SAVE_DATA_BYTES, SAVE_PUSH_OPCODE, SAVE_REQUEST_OPCODE } = require('./save-games');
 
@@ -112,10 +113,6 @@ class GameSession {
         this.remotePlayerMap = {};
         this.stateHistory = [];
 
-        // Active press per player (click-and-drag support): which node the
-        // press started on and the last known pointer position. Set on click,
-        // updated by mousemove, cleared by mouseup / disconnect / node removal.
-        this._activePresses = {};
 
         // Pending client-save requests (broadcast save backend): playerId ->
         // { gameKey, resolve, timer }. Resolved by a 'saveData' input from
@@ -273,6 +270,8 @@ class GameSession {
     }
 
     removePlayer(playerId) {
+        try { this.gameInput?.removePlayer(Number(playerId)); }
+        catch (error) { console.error('[GameSession] Error releasing input:', error); }
         // Disconnect mid-drag counts as releasing — games need the drag-end
         this._endPress(playerId, null);
 
@@ -371,50 +370,7 @@ class GameSession {
         const pid = Number(playerId);
 
         try {
-            if (input.type === 'click') {
-                const data = input.data;
-                if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
-                this._handleClick(pid, data);
-            } else if (input.type === 'keydown') {
-                if (typeof input.key !== 'string' || input.key.length > 20) return;
-                this.game.handleKeyDown && this.game.handleKeyDown(pid, input.key);
-            } else if (input.type === 'keyup') {
-                if (typeof input.key !== 'string' || input.key.length > 20) return;
-                this.game.handleKeyUp && this.game.handleKeyUp(pid, input.key);
-            } else if (input.type === 'mouseup') {
-                this.game.handleMouseUp && this.game.handleMouseUp(pid, input.data);
-                this._endPress(pid, input.data);
-            } else if (input.type === 'mousemove') {
-                // Only sent while the pointer/finger is held down — drives
-                // drag handlers (game.handleMouseMove + pressed node's onDrag)
-                this._handleDragMove(pid, input.data);
-            } else if (input.type === 'input') {
-                if (input.gamepad) {
-                    this.game.handleGamepadInput && this.game.handleGamepadInput(pid, input);
-                } else {
-                    const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-                    const node = this.game.findNode(input.nodeId)
-                        || (topLayer && topLayer.findChild(input.nodeId));
-                    if (node && node.node && node.node.input) {
-                        if (node.node.input.type === 'file') {
-                            const fileBytes = this._decodeFileInput(input.input);
-                            if (fileBytes) node.node.input.oninput(pid, fileBytes, this._buildFileMeta(fileBytes, input));
-                        } else {
-                            node.node.input.oninput(pid, input.input);
-                        }
-                    }
-                }
-            } else if (input.type === 'onhover') {
-                const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-                const node = this.game.findNode(input.nodeId)
-                    || (topLayer && topLayer.findChild(input.nodeId));
-                if (node && node.node?.onHover) node.node.onHover(pid);
-            } else if (input.type === 'offhover') {
-                const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-                const node = this.game.findNode(input.nodeId)
-                    || (topLayer && topLayer.findChild(input.nodeId));
-                if (node && node.node?.offHover) node.node.offHover(pid);
-            } else if (input.type === 'saveData') {
+            if (input.type === 'saveData') {
                 // Answer to a SAVE_REQUEST_OPCODE frame — platform plumbing,
                 // never forwarded to the game. Content is validated again by
                 // extractClientSaveData before any game sees it.
@@ -430,63 +386,13 @@ class GameSession {
                     }
                     this._resolvePendingSave(pid, save);
                 }
+            } else {
+                if (input.type === 'input' && input.gamepad && !this.players[playerId]) return;
+                this._getInputDispatcher().handleInput(pid, input);
             }
         } catch (e) {
             console.error(`[GameSession] Error handling input type="${input.type}" for player ${pid}:`, e);
         }
-    }
-
-    // File uploads arrive as base64 (current clients) or as a JSON-ified
-    // Uint8Array {"0":137,...} (older clients). Decode either into a Buffer,
-    // rejecting empty or oversized payloads. Must stay a Buffer, never a plain
-    // number array — games retain these bytes in Assets, and a JS array costs
-    // ~8x the file size in V8.
-    // Mirrored in homegames-client's LocalDispatcher — keep them in sync.
-    _decodeFileInput(raw) {
-        const MAX_FILE_INPUT_BYTES = 8 * 1024 * 1024;
-        if (typeof raw === 'string') {
-            const buf = Buffer.from(raw, 'base64');
-            if (buf.length === 0 || buf.length > MAX_FILE_INPUT_BYTES) return null;
-            return buf;
-        }
-        if (raw && typeof raw === 'object') {
-            const bytes = Object.values(raw);
-            if (bytes.length === 0 || bytes.length > MAX_FILE_INPUT_BYTES) return null;
-            return Buffer.from(bytes);
-        }
-        return null;
-    }
-
-    // Classify uploaded bytes by magic numbers — authoritative over the
-    // client-reported mime, which is spoofable and often missing.
-    _sniffFileKind(b) {
-        if (b.length > 3 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image'; // PNG
-        if (b.length > 2 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image';                  // JPEG
-        if (b.length > 2 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image';                  // GIF
-        if (b.length > 11 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) {              // RIFF
-            if (b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image';           // WEBP
-            if (b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45) return 'audio';           // WAVE
-        }
-        if (b.length > 2 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'audio';                  // MP3 (ID3)
-        if (b.length > 1 && b[0] === 0xFF && (b[1] & 0xE0) === 0xE0) return 'audio';                          // MP3 (frame sync)
-        if (b.length > 3 && b[0] === 0x4F && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return 'audio'; // Ogg
-        if (b.length > 3 && b[0] === 0x66 && b[1] === 0x4C && b[2] === 0x61 && b[3] === 0x43) return 'audio'; // FLAC
-        if (b.length > 11 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return 'audio'; // MP4/M4A (ftyp)
-        return null;
-    }
-
-    // Meta passed as oninput's third argument for file uploads.
-    // Mirrored in homegames-client's LocalDispatcher — keep them in sync.
-    _buildFileMeta(bytes, input) {
-        const contentType = (typeof input.contentType === 'string' && input.contentType.length <= 100)
-            ? input.contentType : null;
-        let kind = this._sniffFileKind(bytes);
-        if (!kind && contentType) {
-            if (contentType.indexOf('image/') === 0) kind = 'image';
-            else if (contentType.indexOf('audio/') === 0) kind = 'audio';
-        }
-        const fileName = typeof input.fileName === 'string' ? input.fileName.slice(0, 128) : null;
-        return { kind, contentType, fileName };
     }
 
     // -----------------------------------------------------------------------
@@ -703,212 +609,44 @@ class GameSession {
         };
     }
 
-    _handleClick(playerId, click) {
-        if (!click || typeof click.x !== 'number' || typeof click.y !== 'number') return;
-        if (click.x < 0 || click.y < 0 || click.x >= 100 || click.y >= 100) return;
-
-        const existingPress = this._activePresses[playerId];
-        // Current clients mark the first click of a physical press with
-        // press: true (and send mousemove while held). Legacy clients send
-        // neither — for them, a click with no open press starts one, and the
-        // clicks they re-send every ~30ms while dragging drive the drag
-        // handlers here (their original repeated-handleClick behavior is
-        // preserved below).
-        const isNewPress = !existingPress || click.press === true;
-
-        if (existingPress && click.press === true) {
-            // The previous release never reached us (blur, off-canvas
-            // release) — close the stale press out before starting this one.
-            this._endPress(playerId, null);
-        } else if (existingPress && !isNewPress) {
-            this._handleDragMove(playerId, click);
+    _getInputDispatcher() {
+        if (!this._inputDispatcher) {
+            this._inputDispatcher = new GameDispatcher(this.game, {
+                fileBuffers: true,
+                toGameCoords: (x, y) => this._toGameCoords(x, y),
+                findNode: id => this.game.findNode(id)
+                    || (this.frameEnabled && this.frame.topLayerRoot?.findChild(id)),
+                findPointerNode: id => this.game.findNode(id)
+                    || (this.frameEnabled && (this.frame.root?.findChild(id) || this.frame.topLayerRoot?.findChild(id))),
+                getLayers: (x, y, playerId) => this._inputLayers(x, y, playerId),
+            });
+            this.gameInput = this._inputDispatcher.gameInput;
         }
-
-        const spectating = this.spectatorsEnabled && !!this.spectators[playerId];
-        const clickedNode = this._findClick(click.x, click.y, spectating, playerId);
-
-        const bottomLayer = this.frameEnabled ? this.frame.root : null;
-        const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-
-        const realNode = clickedNode
-            ? (this.game.findNode(clickedNode.id)
-                || (bottomLayer && bottomLayer.findChild(clickedNode.id))
-                || (topLayer && topLayer.findChild(clickedNode.id)))
-            : null;
-
-        if (isNewPress) {
-            this._activePresses[playerId] = {
-                node: (realNode && realNode.node) || null,
-                x: click.x,
-                y: click.y,
-            };
-        }
-
-        if (realNode && realNode.node && realNode.node.handleClick) {
-            const { x, y } = this._toGameCoords(click.x, click.y);
-            realNode.node.handleClick(playerId, x, y);
-        }
+        return this._inputDispatcher;
     }
 
-    // A held pointer moved (mousemove input, or a legacy client's repeated
-    // click). Updates the press position and fires the drag handlers.
-    _handleDragMove(playerId, move) {
-        if (!move || typeof move.x !== 'number' || typeof move.y !== 'number') return;
-        if (move.x < 0 || move.y < 0 || move.x >= 100 || move.y >= 100) return;
+    _endPress(playerId, release) { this._inputDispatcher?.endPress(playerId, release); }
 
-        const press = this._activePresses[playerId];
-        if (press) {
-            press.x = move.x;
-            press.y = move.y;
-        }
-
-        const { x, y } = this._toGameCoords(move.x, move.y);
-
-        try {
-            this.game.handleMouseMove && this.game.handleMouseMove(playerId, { x, y });
-        } catch (e) {
-            console.error('[GameSession] game.handleMouseMove threw:', e);
-        }
-
-        if (press && press.node && typeof press.node.onDrag === 'function') {
-            try {
-                press.node.onDrag(playerId, x, y);
-            } catch (e) {
-                console.error('[GameSession] node.onDrag threw:', e);
-            }
-        }
-    }
-
-    // End a player's active press, firing the pressed node's offClick with
-    // the release point. release may be null (disconnect, node removal, lost
-    // mouseup) — the last known drag position is used instead.
-    _endPress(playerId, release) {
-        const press = this._activePresses[playerId];
-        if (!press) return;
-        delete this._activePresses[playerId];
-
-        if (press.node && typeof press.node.offClick === 'function') {
-            const hasCoords = release && typeof release.x === 'number' && typeof release.y === 'number';
-            const raw = hasCoords ? release : { x: press.x, y: press.y };
-            const { x, y } = this._toGameCoords(raw.x, raw.y);
-            try {
-                press.node.offClick(playerId, x, y);
-            } catch (e) {
-                console.error('[GameSession] node.offClick threw:', e);
-            }
-        }
-    }
-
-    // A pressed node can be removed from the tree mid-drag by game logic.
-    // The press can't meaningfully continue, so close it out (fires offClick).
-    // Called from the coalesced broadcast, which every tree change triggers.
     _checkActivePresses() {
-        for (const pid in this._activePresses) {
-            const press = this._activePresses[pid];
-            if (!press.node) continue;
-
-            const bottomLayer = this.frameEnabled ? this.frame.root : null;
-            const topLayer = this.frameEnabled ? this.frame.topLayerRoot : null;
-            const stillPresent = this.game.findNode(press.node.id)
-                || (bottomLayer && bottomLayer.findChild(press.node.id))
-                || (topLayer && topLayer.findChild(press.node.id));
-
-            if (!stillPresent) this._endPress(pid, null);
-        }
+        this._inputDispatcher?.checkActivePresses();
     }
 
-    _findClick(x, y, spectating, playerId) {
-        let clicked = null;
-
-        if (this.frameEnabled && this.frame.root) {
-            clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.root.node, null, { x: 1, y: 1 }, false, 0) || clicked;
-        }
-
-        // The bezel band belongs to the frame. Game geometry that overflows
-        // the viewport is pinned at the frame edge visually (squish clamps
-        // scaled layers), but the hit-test runs on raw coordinates — without
-        // this guard an overflowing game polygon shadows the frame's controls
-        // (home button, spectate/join, settings) and swallows their clicks.
-        // Mirrors the band test in _toGameCoords.
+    _inputLayers(x, y, playerId) {
+        const layers = [];
+        if (this.frameEnabled && this.frame.root) layers.push({ root: this.frame.root });
+        // Overflowing game geometry must never shadow the bezel's controls.
         const inBezel = this.frameEnabled && (
-            x <= (this.bezelX / 2) || x >= (100 - this.bezelX / 2)
-            || y <= (this.bezelY / 2) || y >= (100 - this.bezelY / 2)
+            x <= this.bezelX / 2 || x >= 100 - this.bezelX / 2
+            || y <= this.bezelY / 2 || y >= 100 - this.bezelY / 2
         );
-
         if (!inBezel) {
-            const layers = this.game.getLayers();
-            for (let i = 0; i < layers.length; i++) {
-                const layer = layers[i];
-                const scale = layer.scale || this.scale;
-                clicked = this._findClickHelper(x, y, spectating, playerId, layer.root.node, null, scale, true, 0) || clicked;
-            }
+            for (const layer of this.game.getLayers()) layers.push({
+                ...layer, scale: layer.scale || this.scale,
+                interactive: !(this.spectatorsEnabled && this.spectators[playerId]),
+            });
         }
-
-        if (this.frameEnabled && this.frame.topLayerRoot) {
-            clicked = this._findClickHelper(x, y, spectating, playerId, this.frame.topLayerRoot.node, null, { x: 1, y: 1 }, false, 0) || clicked;
-        }
-
-        return clicked;
-    }
-
-    _findClickHelper(x, y, spectating, playerId, node, clicked, scale, inGame, depth) {
-        // Guard against deep/cyclic trees
-        if (depth > 100) return clicked;
-
-        if (node.playerIds && node.playerIds.length > 0 && !node.playerIds.find(p => p == playerId)) {
-            return clicked;
-        }
-
-        if (node.coordinates2d && node.coordinates2d.length > 0) {
-            const vertices = [];
-            for (let i = 0; i < node.coordinates2d.length; i++) {
-                const xOff = 100 - (scale.x * 100);
-                const yOff = 100 - (scale.y * 100);
-                const sx = node.coordinates2d[i][0] * ((100 - xOff) / 100) + (xOff / 2);
-                const sy = node.coordinates2d[i][1] * ((100 - yOff) / 100) + (yOff / 2);
-                vertices.push([sx, sy]);
-            }
-
-            if (vertices.length > 0) {
-                let isInside = false;
-                let minX = vertices[0][0], maxX = vertices[0][0];
-                let minY = vertices[0][1], maxY = vertices[0][1];
-                for (let i = 1; i < vertices.length; i++) {
-                    minX = Math.min(vertices[i][0], minX);
-                    maxX = Math.max(vertices[i][0], maxX);
-                    minY = Math.min(vertices[i][1], minY);
-                    maxY = Math.max(vertices[i][1], maxY);
-                }
-
-                if (!(x < minX || x > maxX || y < minY || y > maxY)) {
-                    let ii = 0, jj = vertices.length - 1;
-                    for (ii, jj; ii < vertices.length; jj = ii++) {
-                        if ((vertices[ii][1] > y) !== (vertices[jj][1] > y) &&
-                            x < (vertices[jj][0] - vertices[ii][0]) * (y - vertices[ii][1]) / (vertices[jj][1] - vertices[ii][1]) + vertices[ii][0]) {
-                            isInside = !isInside;
-                        }
-                    }
-                }
-
-                if (isInside) {
-                    if (!(spectating && inGame)) {
-                        clicked = node;
-                    }
-                }
-            }
-        }
-
-        if (node.children) {
-            const childKeys = Object.keys(node.children);
-            for (let i = 0; i < childKeys.length; i++) {
-                const child = node.children[childKeys[i]];
-                if (child && child.node) {
-                    clicked = this._findClickHelper(x, y, spectating, playerId, child.node, clicked, scale, inGame, depth + 1);
-                }
-            }
-        }
-
-        return clicked;
+        if (this.frameEnabled && this.frame.topLayerRoot) layers.push({ root: this.frame.topLayerRoot });
+        return layers;
     }
 }
 

@@ -11,7 +11,7 @@ const os = require('os');
 const squishMap = {
     '142': 'squish-142',
     '143': 'squish-143',
-    '144': 'squish-144'
+    '145': 'squish-145'
 };
 
 const DEFAULT_SQUISH_VERSION = '142';

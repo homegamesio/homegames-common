@@ -162,9 +162,11 @@ const packAssetBundle = (entries) => Buffer.from(packAssetBundleShared(entries))
 // < is the JSON-safe universal escape.
 const _jsonForInlineScript = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
 
-const buildLocalHtml = ({ name, files, entryPoint, assetBundleBase64, clientBundleSource }) => {
+const buildLocalHtml = ({ name, gameKey, versionId, files, entryPoint, assetBundleBase64, clientBundleSource }) => {
     const payload = _jsonForInlineScript({
         name: name || 'Homegames',
+        gameKey,
+        versionId,
         files,
         entryPoint,
         assetBundleBase64: assetBundleBase64 || null,
@@ -200,6 +202,8 @@ window.__HG_LOCAL_GAME__ = ${payload};
     }
     var session = new HomegamesClient.LocalSession({
         containerId: 'homegames-main',
+        gameKey: payload.gameKey,
+        versionId: payload.versionId,
         files: payload.files,
         entryPoint: payload.entryPoint,
         assetBundle: assetBundle,

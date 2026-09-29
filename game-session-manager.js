@@ -67,7 +67,7 @@ class GameSessionManager {
      * @param {string} [opts.childServerPath] — path to child_game_server.js (for fork fallback)
      * @param {string} [opts.dockerImageName] — Docker image name (default 'homegames-runner')
      * @param {number} [opts.gracePeriodMs] — ms to wait with no players before killing (default 30000)
-     * @param {number} [opts.lifecycleCheckMs] — ms between lifecycle checks (default 10000)
+     * @param {number} [opts.lifecycleCheckMs] — ms between lifecycle checks (default 3000)
      * @param {object} [opts.forgejo] — { url, token } for Forgejo access
      * @param {string} [opts.saveDataRoot] — root directory for game save data
      * @param {string} [opts.username] — homegames username
@@ -348,6 +348,7 @@ class GameSessionManager {
         // subdirectory inside the /app/save mount; SAVES_ENABLED=false switches
         // the child to the broadcast backend, with the creating client's save
         // (if any) delivered as a base64 envelope.
+        extraEnv.GRACE_PERIOD_MS = String(this.gracePeriodMs);
         extraEnv.SAVES_ENABLED = savesEnabled ? 'true' : 'false';
         if (input.gameKey) {
             // Without this the child keys saves off basename(GAME_PATH) —
@@ -382,7 +383,6 @@ class GameSessionManager {
             containerId,
             squishVersion,
             cleanup: cleanupFn,
-            _emptyTicks: 0,
             persistent: false,
             private: !!input.private,
         };
@@ -498,6 +498,7 @@ class GameSessionManager {
             
             // V8's --max-old-space-size is in megabytes; convert the Docker-style
             // memory limit string (bytes) to MB.
+            env.GRACE_PERIOD_MS = String(this.gracePeriodMs);
             const maxOldSpaceMb = Math.max(1, Math.floor(parseMemoryString(this.memoryLimit) / (1024 * 1024)));
             const child = fork(this.childServerPath, [], {
                 env,
@@ -534,7 +535,6 @@ class GameSessionManager {
                 cleanup: cleanupFn,
                 gameKey: input.gameKey || null,
                 gamePath,
-                _emptyTicks: 0,
                 persistent: false,
                 private: !!input.private,
                 requestCallbacks: {},
@@ -678,7 +678,7 @@ class GameSessionManager {
     }
 
     // -----------------------------------------------------------------------
-    // Lifecycle monitor — kill sessions with no players after grace period
+    // Process supervision — idle lifetime belongs to the child
     // -----------------------------------------------------------------------
     _startLifecycleMonitor(sessionId) {
         const session = this.sessions[sessionId];
@@ -699,34 +699,9 @@ class GameSessionManager {
                     return;
                 }
 
-                // Admin-pinned sessions never get torn down for being empty.
-                if (s.persistent) {
-                    s._emptyTicks = 0;
-                    return;
-                }
-
-                // Check occupancy — stop container if empty past grace period.
-                // Spectators count: a session people are watching is not empty.
-                try {
-                    const healthData = await this._querySessionHealth(s.port);
-                    const playerCount = healthData && healthData.playerCount !== undefined
-                        ? healthData.playerCount + (healthData.spectatorCount || 0)
-                        : -1;
-                    if (playerCount === 0) {
-                        s._emptyTicks++;
-                        const emptyMs = s._emptyTicks * this.lifecycleCheckMs;
-                        if (emptyMs >= this.gracePeriodMs) {
-                            this.log.info(`Session ${sessionId} empty for ${emptyMs}ms, stopping`);
-                            await stopContainer(s.containerId);
-                            this._cleanupSession(sessionId);
-                            return;
-                        }
-                    } else if (playerCount > 0) {
-                        s._emptyTicks = 0;
-                    }
-                } catch (e) {
-                    // Health check failed — container might be starting up, ignore
-                }
+                // Occupancy and pinning are evaluated by the child itself,
+                // using the same policy as fork mode. The manager only reaps
+                // exited containers and releases their resources.
             } else if (s.type === 'fork') {
                 // For fork sessions, send heartbeat. The child_game_server.js
                 // already has its own checkPulse logic.
@@ -754,32 +729,6 @@ class GameSessionManager {
         }
 
         this._cleanupSession(sessionId);
-    }
-
-    _querySessionHealth(port) {
-        return new Promise((resolve) => {
-            // Sessions with certs serve https; cert won't match localhost, so
-            // skip verification for this loopback check.
-            const mod = this.certPath ? require('https') : http;
-            const req = mod.request({
-                hostname: 'localhost',
-                port,
-                path: '/health',
-                method: 'GET',
-                timeout: 2000,
-                rejectUnauthorized: false,
-            }, (res) => {
-                let data = '';
-                res.on('data', (chunk) => { data += chunk; });
-                res.on('end', () => {
-                    try { resolve(JSON.parse(data)); }
-                    catch (e) { resolve(null); }
-                });
-            });
-            req.on('error', () => resolve(null));
-            req.on('timeout', () => { req.destroy(); resolve(null); });
-            req.end();
-        });
     }
 
     _cleanupSession(sessionId) {
@@ -841,8 +790,8 @@ class GameSessionManager {
 
     /**
      * Pin or unpin a session so it survives (or resumes) empty-session teardown.
-     * Updates the manager's own record (which gates the docker lifecycle monitor)
-     * and pushes the flag to the child that runs checkPulse: IPC for fork
+     * Updates the manager's listing and pushes the flag to the child that
+     * owns idle cleanup: IPC for fork
      * sessions, a secret-gated HTTP POST for docker sessions. Resolves to the
      * new value, or rejects if the session is unknown or the push fails.
      */
@@ -867,9 +816,9 @@ class GameSessionManager {
                 const secret = require('./index').getConfigValue('HOMENAMES_API_SECRET', '');
                 if (!secret) {
                     // No secret configured: the docker /control endpoint is
-                    // disabled, so we can't reach the child. The manager-side
-                    // flag still gates the lifecycle monitor, but the child's
-                    // own checkPulse would still self-terminate on empty.
+                    // disabled, so we can't reach the child. The child
+                    // cannot honor pinning until its control endpoint
+                    // receives this update.
                     reject(new Error('HOMENAMES_API_SECRET not configured; cannot control docker session'));
                     return;
                 }
