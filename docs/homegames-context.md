@@ -336,7 +336,7 @@ constructor({ saveGame, saveData }) {
 - `handlePlayerDisconnect(playerId)` receives the **bare id**, not an object. (If a player id reconnects while already connected, the runtime fires `handlePlayerDisconnect` for the old connection and then `handleNewPlayer` again.)
 - `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)` — two positional args.
 - A node's `onClick` receives `(playerId, x, y)` — see §9.
-- Other real hooks the runtime calls when present: `handleMouseMove(playerId, {x, y})` / `handleMouseUp(playerId, data)` (held-pointer stream, §9), `handleGamepadInput(playerId, input)` (gamepad state changes), `handlePlayerUpdate(playerId, { info, settings })` (a player renamed themselves or changed settings).
+- Other real hooks the runtime calls when present: `handleMouseMove(playerId, {x, y})` / `handleMouseUp(playerId, data)` (held-pointer stream, §9), `handleGamepadInput(playerId, input)` (repeated normalized gamepad input; see below), `handlePlayerUpdate(playerId, { info, settings })` (a player renamed themselves or changed settings).
 
 > **If the runtime doesn't call it, it doesn't exist.** The hooks above are the complete lifecycle — there is no duck typing. A plausible-looking method the runtime never calls (`canAddPlayer()` as a join gate) is pure dead code: the game runs, the method sits there looking load-bearing, and everyone assumes it works. That's worse than an error — join capacity is *only* `metadata().maxPlayers`. When a behavior must exist, verify the mechanism is one named here (or a node `onClick`/`input`), and **delete** anything else so it can't mislead a later reader. (One method that IS honored despite looking optional: a `getAssets()` returning `{ key: Asset }` is merged into the asset bundle by the hosted engine — but the static parser that decides play modes only sees `metadata().assets`, so declare assets in the metadata literal anyway.)
 
@@ -960,6 +960,39 @@ handleKeyUp(playerId, key) { delete this.writers[playerId].keys[key]; }
 The 400ms staleness check doubles as a safety net: if a `keyup` is ever lost, the key un-sticks by itself. See `src/games/text-input` (Typewriter) in homegames-core for the complete pattern with wrapping, a blinking cursor, and a tap-to-type prompt fallback for phones.
 
 > Mobile players have no physical keyboard. If your game needs keyboard control, also provide on-screen `onClick` buttons (or the `input:{type:'text'}` prompt for text), or design click/tap-first.
+
+### Gamepad input
+
+Games do not import Homepad. The platform normalizes controllers and routes them to the same player in hosted and local play. To reuse your keyboard handlers, add a literal `gamepadBindings` object to `metadata()`:
+
+```js
+gamepadBindings: {
+    ArrowLeft: ['DIRECTION_LEFT', 'STICK_1_LEFT'],
+    ArrowRight: ['DIRECTION_RIGHT', 'STICK_1_RIGHT'],
+    ArrowUp: ['DIRECTION_UP', 'STICK_1_UP'],
+    ArrowDown: ['DIRECTION_DOWN', 'STICK_1_DOWN'],
+    ' ': 'FACE_1',
+}
+```
+
+Bindings call `handleKeyDown` repeatedly while held and `handleKeyUp` on release. An array means either control activates that key. Button names are positional: `FACE_1/2/3/4` are bottom/right/left/top, regardless of printed labels. Other controls include `LEFT_TRIGGER`, `RIGHT_TRIGGER`, `LEFT_SHOULDER`, `RIGHT_SHOULDER`, `START`, `SELECT`, and `STICK_CLICK_1/2`. Both sticks support `_LEFT`, `_RIGHT`, `_UP`, `_DOWN` bindings (threshold 0.5 after the dead zone).
+
+For analog control or button edges:
+
+```js
+handleGamepadInput(playerId, { input, gamepadIndex, connected, deltaTime, pressed, released }) {
+    // sticks are -1..1 after dead-zone removal; buttons have { value, pressed }.
+    const x = input.sticks.STICK_1_X.value;
+    const y = input.sticks.STICK_1_Y.value;
+    // Apply speed * deltaTime for movement; deltaTime is seconds, capped at 0.1.
+    // pressed.includes('FACE_1') fires once, even if the button stays held.
+    // connected === false has neutral inputs and deltaTime === 0: clear stored state.
+}
+```
+
+Delivery repeats up to 30 Hz, including unchanged held controls; it is not tied to screen refresh rate. The rate is reduced for more than two controllers sharing one player to keep the total at 60 messages/second. Focus loss, hiding the page, disconnecting a controller, and detaching input send neutral releases. Button edge arrays are calculated per player/controller. The platform combines keyboard and mapped controller keys so one source's release does not cancel another's hold. A game's `handlePlayerDisconnect` must still clean up that player's state.
+
+Both hooks run if you implement raw input and declarative bindings. Do not move the same entity twice. See `src/games/gamepad-test` for a complete bindings/diagnostic example, `move-test` for analog movement, and `halloween-words` for bindings added to a keyboard game.
 
 ### Text input (on-screen fields)
 
