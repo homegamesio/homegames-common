@@ -21,6 +21,7 @@
 
 const WebSocket = require('ws');
 const GameDispatcher = require('./game-dispatch');
+const { createSessionRuntime, playerFrame } = require('./session-runtime');
 const { squishMap, DEFAULT_SQUISH_VERSION } = require('./game-loader');
 const { MAX_SAVE_DATA_BYTES, SAVE_PUSH_OPCODE, SAVE_REQUEST_OPCODE } = require('./save-games');
 
@@ -89,7 +90,8 @@ class GameSession {
             };
         }
 
-        this.squisher = new Squisher(squisherOpts);
+        this.runtime = createSessionRuntime(Squisher, game, squisherOpts);
+        this.squisher = this.runtime.squisher;
         // Coalesce broadcasts: a single game tick often mutates many nodes, each
         // firing onStateChange -> a listener call. Without coalescing that's one
         // full per-player send (frame.flat + Buffer.from + ws.send) per mutation.
@@ -514,6 +516,7 @@ class GameSession {
     }
 
     destroy() {
+        this.runtime.stop();
         for (const pid in this._pendingSaveRequests) {
             this._resolvePendingSave(pid, null);
         }
@@ -567,12 +570,8 @@ class GameSession {
         // state, so flush any pending changes first. No-op when nothing pending
         // and on older squishers that don't implement flush().
         if (typeof this.squisher.flush === 'function') this.squisher.flush();
-        let frame = this.squisher.getPlayerFrame(playerId);
-        if (!frame) frame = this.squisher.state;
-        if (frame) {
-            const flat = Array.isArray(frame) ? frame.flat() : frame;
-            this._send(ws, flat);
-        }
+        const frame = playerFrame(this.squisher, playerId);
+        if (frame) this._send(ws, frame);
     }
 
     _send(ws, data) {
