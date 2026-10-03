@@ -1,12 +1,11 @@
 /**
- * Local play support: lets single-player games run entirely in the player's
+ * Local play support: lets games run entirely in the player's
  * browser (via homegames-client's LocalSession) with no game server.
  *
  * Canonical copy — shared by the platform API (games from Forgejo/Mongo) and
  * homegames-core (games from local disk), so "is this game local-playable"
  * and the bundle byte format are decided identically everywhere. The API
- * currently carries its own copy (api/local-play.js) pinned to an older
- * homegames-common; it should switch to this module on its next common bump.
+ * and Core both import this module.
  *
  * Pure logic only — no storage access — so it can be tested in isolation:
  *   - parseGameSourceMetadata: statically extract metadata() facts from game
@@ -92,6 +91,9 @@ const parseGameSourceMetadata = (source) => {
             meta.thumbnail = _literal(prop.value) || null;
         } else if (key === 'isTest') {
             meta.isTest = _literal(prop.value) === true;
+        } else if (key === 'maxPlayers') {
+            const value = _literal(prop.value);
+            if (Number.isInteger(value) && value > 0) meta.maxPlayers = value;
         } else if (key === 'services' && prop.value.type === 'ArrayExpression') {
             meta.services = prop.value.elements.map(_literal).filter(Boolean);
         } else if (key === 'assets' && prop.value.type === 'ObjectExpression') {
@@ -121,8 +123,7 @@ const parseGameSourceMetadata = (source) => {
 
 /**
  * Whether a game is eligible to run client-side. Multiplayer games qualify —
- * they run as a solo local session (hosted sessions are offered separately on
- * the game page); only games that structurally can't run locally (parse
+ * they run in a browser host and can admit RTC guests. Games that cannot run (parse
  * failures, services with no local fallback) opt out.
  */
 const checkLocalPlayable = (meta) => {
@@ -133,9 +134,7 @@ const checkLocalPlayable = (meta) => {
     return { playable: true };
 };
 
-// Same policy as instant play: multiplayer games may be downloaded (they run
-// as a solo local session — the UI notes that multiplayer features won't
-// work), but games that structurally can't run may not.
+// Downloads use the same runtime and RTC sharing as browser Play.
 const checkDownloadable = (meta) => {
     if (meta.error) return { downloadable: false, reason: meta.error };
     if (meta.services.includes('contentGenerator')) {
@@ -162,7 +161,7 @@ const packAssetBundle = (entries) => Buffer.from(packAssetBundleShared(entries))
 // < is the JSON-safe universal escape.
 const _jsonForInlineScript = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
 
-const buildLocalHtml = ({ name, gameKey, versionId, files, entryPoint, assetBundleBase64, clientBundleSource }) => {
+const buildLocalHtml = ({ name, gameKey, versionId, files, entryPoint, assetBundleBase64, clientBundleSource, sharing = {} }) => {
     const payload = _jsonForInlineScript({
         name: name || 'Homegames',
         gameKey,
@@ -170,6 +169,7 @@ const buildLocalHtml = ({ name, gameKey, versionId, files, entryPoint, assetBund
         files,
         entryPoint,
         assetBundleBase64: assetBundleBase64 || null,
+        sharing,
     });
 
     return `<!DOCTYPE html>
@@ -200,13 +200,18 @@ window.__HG_LOCAL_GAME__ = ${payload};
         assetBundle = new Uint8Array(bin.length);
         for (var i = 0; i < bin.length; i++) assetBundle[i] = bin.charCodeAt(i);
     }
-    var session = new HomegamesClient.LocalSession({
+    var client = new HomegamesClient({
         containerId: 'homegames-main',
-        gameKey: payload.gameKey,
-        versionId: payload.versionId,
-        files: payload.files,
-        entryPoint: payload.entryPoint,
-        assetBundle: assetBundle,
+        localHome: false,
+        share: payload.sharing || {},
+        loadLocalGame: async function() { return {
+            name: payload.name,
+            gameKey: payload.gameKey,
+            versionId: payload.versionId,
+            files: payload.files,
+            entryPoint: payload.entryPoint,
+            assetBundle: assetBundle
+        }; },
         onError: function(err) {
             console.error(err);
             var el = document.createElement('div');
@@ -215,7 +220,8 @@ window.__HG_LOCAL_GAME__ = ${payload};
             document.body.appendChild(el);
         }
     });
-    session.start();
+    window.addEventListener('pagehide', function() { client.stop(); });
+    client.startLocalGame({});
 })();
 </script>
 </body>

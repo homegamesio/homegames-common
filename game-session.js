@@ -433,10 +433,10 @@ class GameSession {
     // Tell one player's client to leave this session and run a game
     // single-player in the browser (LocalSession fed by the server's
     // /games/:gameKey/local-manifest endpoint). Opcode 12: [12] + UTF-8 JSON.
-    sendLocalPlayRedirect(playerId, { gameKey, versionId = null } = {}) {
+    sendLocalPlayRedirect(playerId, { gameKey, versionId = null, invitation = null } = {}) {
         const ws = this.players[playerId];
-        if (ws && gameKey) {
-            const payload = Buffer.from(JSON.stringify({ gameKey, versionId }), 'utf8');
+        if (ws && (gameKey || invitation)) {
+            const payload = Buffer.from(JSON.stringify({ gameKey, versionId, ...(invitation ? { invitation } : {}) }), 'utf8');
             this._send(ws, Buffer.concat([Buffer.from([12]), payload]));
         }
     }
