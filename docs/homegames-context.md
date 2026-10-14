@@ -478,6 +478,9 @@ class MyGame extends Game {
     // A player joined. info.name is their display name.
     handleNewPlayer({ playerId, info, settings, clientInfo }) {}
 
+    // A player changed their name in the player menu. Refresh their labels.
+    handlePlayerUpdate(playerId, { info, settings }) {}
+
     // A player left. Clean up their nodes/state.
     handlePlayerDisconnect(playerId) {}
 
@@ -553,6 +556,7 @@ constructor({ saveGame, saveData }) {
 
 **Method signatures are exact and important:**
 - `handleNewPlayer` receives a **single object** `{ playerId, info, settings, clientInfo, requestedGame }` — destructure it. `playerId` is a number. `info.name` is the player's name.
+- Players initially get a random two-word name. **More → Your name → Save name** changes it and remembers it in that browser. Local, RTC (including manual connections), and WebSocket sessions call `handlePlayerUpdate(playerId, { info, settings })` for a rename; `info.name` contains the new name and settings are preserved. Update any cached roster or label in this hook. Names are non-unique display text, 1–32 characters, never an identity or authorization key; use `playerId` for session state. Browser preferences stay outside game ZIPs/HTML, so recipients use their own names.
 - `handlePlayerDisconnect(playerId)` receives the **bare id**, not an object. (If a player id reconnects while already connected, the runtime fires `handlePlayerDisconnect` for the old connection and then `handleNewPlayer` again.)
 - `handleKeyDown(playerId, key)` / `handleKeyUp(playerId, key)` — two positional args.
 - A node's `onClick` receives `(playerId, x, y)` — see §9.

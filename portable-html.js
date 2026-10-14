@@ -9,6 +9,7 @@ const { createExportsViewer } = require('./exports-viewer');
 const { recordVideo } = require('./video-recording');
 const { createExportStorage } = require('./export-storage');
 const { createPlayerToolbar } = require('./player-toolbar');
+const { createPlayerIdentity } = require('./player-identity');
 const inline = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const escapeHtml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const filename = name => {
@@ -74,15 +75,15 @@ if(format==='zip')return copy.bytes;
 return new TextEncoder().encode(await HomegamesClient.PortableProject.buildIsolatedHtml(copy.project,{clientBundleSource:document.scripts[0].textContent,installationId:crypto.randomUUID(),sharing:payload.sharing}));
 },{list:()=>client.listExports(),read:name=>client.readExport(name)}, {
 share:()=>client.showShare(),exports:()=>client.viewExports(),'copy-share':shareCopy,'manual-connect':()=>pairing?.show(),
-'pause-input':()=>client.setInputEnabled(false),'resume-input':()=>client.setInputEnabled(true)
+'pause-input':()=>client.setInputEnabled(false),'resume-input':()=>client.setInputEnabled(true),'player-name':name=>client.setPlayerName(name)
 });
-const ready=status=>clientSource.setState({title:project.metadata.name||'Homegame',status,ready:true,sharing:!!payload.sharing});
-client=new HomegamesClient({containerId:'game',chrome:false,localHome:false,share:payload.sharing,saveStore,platform:clientSource,
+const ready=status=>clientSource.setState({title:project.metadata.name||'Homegame',status,ready:true,sharing:!!payload.sharing,playerNames:typeof client.setPlayerName==='function'});
+client=new HomegamesClient({containerId:'game',chrome:false,localHome:false,share:payload.sharing,saveStore,platform:clientSource,playerName:await clientSource.getPlayerName?.(),
 loadLocalGame:async()=>HomegamesClient.PortableProject.prepareTrustedLocalGame(project,{trusted:true,installationId:payload.installationId}),
 onReady:()=>ready('Playing locally'),onSessionStatus:state,onError:fail});
 pairing=payload.sharing?HomegamesClient.createManualPairing({container:document.body,getSession:()=>client._localSession,
 onOpen:()=>client.setInputEnabled(false),onClose:()=>client.setInputEnabled(true),
-join:transport=>{client.stop();client=new HomegamesClient({containerId:'game',chrome:false,transport,platform:clientSource,onReady:()=>ready('Connected manually to host'),onClose:()=>state('Host disconnected'),onError:fail});client.start();}}):null;
+join:async transport=>{client.stop();client=new HomegamesClient({containerId:'game',chrome:false,transport,platform:clientSource,playerName:await clientSource.getPlayerName?.(),onReady:()=>ready('Connected manually to host'),onClose:()=>state('Host disconnected'),onError:fail});client.start();}}):null;
 window.addEventListener('pagehide',()=>{copyShare?.close();pairing?.dispose();client.stop();clientSource.close();});client.startLocalGame({});
 }catch(error){fail(error);}
 })();
@@ -115,7 +116,7 @@ const originalHtml='<!doctype html>\\n'+document.documentElement.outerHTML;
 let frame,saveHost,clientHost;
 const toolbar=(${createPlayerToolbar.toString()})(window,{title:payload.title,status:'Starting game…',onOpen:()=>clientHost?.command('pause-input'),onClose:()=>clientHost?.command('resume-input')});document.body.prepend(toolbar.bar);
 const showSaveStatus=message=>toolbar.setStatus(message);
-async function mount(){clientHost?.close();if(saveHost)await saveHost.close();frame?.remove();frame=(${createFrame.toString()})(document,payload.document);saveHost=(${attachSaveHost.toString()})(window,frame,{...payload.saves,onStatus:value=>showSaveStatus(value.message)});clientHost=(${attachClientHost.toString()})(window,frame,(${recordAudio.toString()}),(${createExportStorage.toString()})(window,payload.saves),(${createExportsViewer.toString()}),(${recordVideo.toString()}),(${createPlayerToolbar.toString()}),{toolbar,htmlId:'portable-html-copy',zipId:'portable-copy'});document.body.appendChild(frame);}
+async function mount(){clientHost?.close();if(saveHost)await saveHost.close();frame?.remove();frame=(${createFrame.toString()})(document,payload.document);saveHost=(${attachSaveHost.toString()})(window,frame,{...payload.saves,onStatus:value=>showSaveStatus(value.message)});clientHost=(${attachClientHost.toString()})(window,frame,(${recordAudio.toString()}),(${createExportStorage.toString()})(window,payload.saves),(${createExportsViewer.toString()}),(${recordVideo.toString()}),(${createPlayerToolbar.toString()}),{toolbar,htmlId:'portable-html-copy',zipId:'portable-copy',profile:(${createPlayerIdentity.toString()})().profile(window)});document.body.appendChild(frame);}
 const fallback=(bytes,type,name)=>{const url=URL.createObjectURL(new Blob([bytes],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);};
 toolbar.setAction('download-html',{label:'Download game HTML',id:'portable-html-copy',run:()=>fallback(originalHtml,'text/html',payload.name.replace(/\\.zip$/,'.html'))});
 toolbar.setAction('download-zip',{label:'Download game ZIP',id:'portable-copy',run:()=>fallback(Uint8Array.from(atob(payload.archive),c=>c.charCodeAt(0)),'application/zip',payload.name)});

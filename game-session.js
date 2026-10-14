@@ -28,17 +28,7 @@ const { squishMap, DEFAULT_SQUISH_VERSION } = require('./game-loader');
 const { MAX_SAVE_DATA_BYTES, SAVE_PUSH_OPCODE, SAVE_REQUEST_OPCODE } = require('./save-games');
 const { normalizeCursor, encodeCursor } = require('./cursor');
 
-// Simple name generator for anonymous players
-const _NAME_WORDS = [
-    'chocolate', 'iguana', 'cardigan', 'enormous', 'gargantuan', 'orangutan',
-    'cookies', 'monstera', 'daisy', 'grapefruit', 'blueberry', 'mango',
-    'elephant', 'bamboo', 'sapphire', 'papaya', 'waffle', 'turquoise',
-    'aquatic', 'goblin', 'funky', 'hotdog', 'elegant', 'cascade', 'euphoria',
-];
-const _generateName = () => {
-    const pick = () => _NAME_WORDS[Math.floor(Math.random() * _NAME_WORDS.length)];
-    return pick() + ' ' + pick();
-};
+const { generateName: _generateName, initialName, normalizeName } = require('./player-identity');
 
 class GameSession {
     constructor(game, squishVersion, opts = {}) {
@@ -161,7 +151,8 @@ class GameSession {
         }
 
         this.players[playerId] = ws;
-        this.playerInfoMap[playerId] = playerOpts.info || {};
+        this.playerInfoMap[playerId] = { ...(playerOpts.info || {}) };
+        const preferredName = playerOpts.playerName === undefined ? null : initialName(playerOpts.playerName);
         this.clientInfoMap[playerId] = playerOpts.clientInfo || {};
         this.playerSettingsMap[playerId] = playerOpts.settings || { SOUND: true };
         if (playerOpts.isRemote) this.remotePlayerMap[playerId] = true;
@@ -183,8 +174,8 @@ class GameSession {
 
                 // Homenames may be unreachable (or have no record yet) — never
                 // hand the game a nameless player.
-                if (!this.playerInfoMap[playerId].name) {
-                    this.playerInfoMap[playerId].name = _generateName();
+                if (preferredName || !this.playerInfoMap[playerId].name) {
+                    this.playerInfoMap[playerId].name = preferredName || _generateName();
                 }
 
                 const playerPayload = {
@@ -244,8 +235,8 @@ class GameSession {
                     .catch(() => finishAdd());
             }
         } else {
-            if (!this.playerInfoMap[playerId].name) {
-                this.playerInfoMap[playerId].name = _generateName();
+            if (preferredName || !this.playerInfoMap[playerId].name) {
+                this.playerInfoMap[playerId].name = preferredName || _generateName();
             }
 
             const playerPayload = {
@@ -384,6 +375,14 @@ class GameSession {
         const pid = Number(playerId);
 
         try {
+            if (input.type === 'player-info') {
+                if (!this.players[playerId]) return;
+                let name; try { name = normalizeName(input.name); } catch (_) { return; }
+                if (this.playerInfoMap[playerId]?.name !== name) this.handlePlayerUpdate(pid, {
+                    info: { ...this.playerInfoMap[playerId], name }, settings: { ...this.playerSettingsMap[playerId] }
+                });
+                return;
+            }
             if (input.type === 'media' && this.players[playerId] && this.media) {
                 if (input.action === 'hello') {
                     this.media.join(pid, { live: false, recording: input.recording === 1 || input.recording === 2, audioRecording: input.recording === 2,

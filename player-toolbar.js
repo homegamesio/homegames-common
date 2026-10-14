@@ -31,6 +31,9 @@ function createPlayerToolbar(window, options = {}) {
 .hg-player-menu-actions{display:flex;flex-direction:column;gap:6px}.hg-player-menu button{width:100%;min-height:44px;padding:10px 12px;text-align:left}
 .hg-player-menu .hg-player-menu-status{font-size:12px;color:#b7bfb5;overflow-wrap:anywhere;margin:12px 0}
 .hg-player-menu .hg-player-menu-close{text-align:center;margin-top:10px}
+.hg-player-name{margin:0 0 16px;padding-bottom:16px;border-bottom:1px solid #4a5049}
+.hg-player-name label{display:block;margin-bottom:6px}.hg-player-name input{width:100%;min-height:44px;padding:10px;font:inherit;color:inherit;background:#141815;border:1px solid #4a5049;border-radius:8px}
+.hg-player-name button{margin-top:8px}.hg-player-name p{font-size:12px;color:#b7bfb5;margin:8px 0 0;overflow-wrap:anywhere}
 `;
     bar.append(style);
     const home = element(typeof options.home === 'string' ? 'a' : 'button', 'hg-player-icon', '⌂');
@@ -51,11 +54,26 @@ function createPlayerToolbar(window, options = {}) {
     const menu = element('dialog', 'hg-player-menu'); menu.setAttribute('aria-label', 'Game options');
     const menuTitle = element('h2', '', 'Game options'), list = element('div', 'hg-player-menu-actions');
     const menuStatus = element('p', 'hg-player-menu-status');
+    const nameForm = element('form', 'hg-player-name'); nameForm.hidden = true;
+    const nameLabel = element('label', '', 'Your name'), nameInput = element('input', '');
+    nameInput.type = 'text'; nameInput.maxLength = 32; nameInput.required = true; nameInput.autocomplete = 'nickname';
+    nameInput.setAttribute('aria-label', 'Your name'); nameLabel.append(nameInput);
+    const nameSave = element('button', '', 'Save name'); nameSave.type = 'submit';
+    const nameStatus = element('p', ''); nameStatus.setAttribute('role', 'status');
+    nameForm.append(nameLabel, nameSave, nameStatus);
+    let playerName = '', changeName;
+    nameForm.onsubmit = async event => {
+        event.preventDefault(); if (!changeName || nameSave.disabled) return;
+        nameSave.disabled = true;
+        try { playerName = await changeName(nameInput.value); nameInput.value = playerName; nameStatus.textContent = 'Name updated for this session.'; }
+        catch (error) { nameStatus.textContent = error.message || String(error); }
+        finally { nameSave.disabled = false; }
+    };
     const done = element('button', 'hg-player-menu-close', 'Done'); done.type = 'button'; done.onclick = () => menu.close();
-    menu.append(menuTitle, list, menuStatus, done); document.body.append(menu);
+    menu.append(menuTitle, nameForm, list, menuStatus, done); document.body.append(menu);
     let menuActive = false;
     const resume = () => { if (menuActive) { menuActive = false; options.onClose?.(); } };
-    more.onclick = () => { if (!menu.open) { menuActive = true; options.onOpen?.(); menu.showModal(); } };
+    more.onclick = () => { if (!menu.open) { nameInput.value = playerName; nameStatus.textContent = ''; menuActive = true; options.onOpen?.(); menu.showModal(); } };
     menu.addEventListener('close', resume);
     menu.addEventListener('click', event => { if (event.target === menu) { const r = menu.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) menu.close(); } });
     let disposed = false;
@@ -63,6 +81,11 @@ function createPlayerToolbar(window, options = {}) {
         bar, menu, statusElement: status,
         setTitle(value) { title.textContent = title.title = value || 'Homegames'; },
         setStatus(value) { status.textContent = status.title = menuStatus.textContent = value || ''; },
+        setPlayerName(value, onChange) {
+            playerName = value; changeName = onChange; nameForm.hidden = !onChange;
+            if (!menu.open) nameInput.value = value;
+            if (onChange) more.hidden = false;
+        },
         setAction(key, value) {
             if (!value) { const old = actions.get(key); if (old) { old.hidden = true; if (old !== share && old !== exportsButton && old !== downloadButton) old.remove(); actions.delete(key); } return; }
             let button = actions.get(key);

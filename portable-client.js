@@ -13,7 +13,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
         });
     }
     const status = text => { if (options.onPlayerStatus) options.onPlayerStatus(text); else toolbar?.setStatus(text); };
-    function command(action) { if (port && !closed) port.postMessage({ type: 'player-control', action }); }
+    function command(action, value) { if (port && !closed) port.postMessage({ type: 'player-control', action, value }); }
     async function download(format) {
         try {
             status('Preparing game download…');
@@ -31,6 +31,10 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
                 if (typeof message.title === 'string') toolbar?.setTitle(message.title.slice(0, 200));
                 if (typeof message.status === 'string') status(message.status.slice(0, 300));
                 if (message.ready) {
+                    toolbar?.setPlayerName(options.profile?.get() || '', message.playerNames && options.profile ? value => {
+                        if (closed) throw new Error('This player has closed. Reopen the game to change your name.');
+                        const name = options.profile.set(value); command('player-name', name); return name;
+                    } : null);
                     for (const [key, label] of [['share', 'Share'], ['copy-share', 'Share a copy'], ['manual-connect', 'Manual connection'], ['exports', 'View exports']]) {
                         toolbar?.setAction(key, key !== 'exports' && !message.sharing ? null : { label, run: () => command(key) });
                     }
@@ -71,7 +75,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
             else if (!(message.bytes instanceof Uint8Array) || !message.bytes.length || message.bytes.length > (entry.format === 'html' ? 220 : 65) * 1024 * 1024) entry.reject(new Error('Invalid game download'));
             else entry.resolve(message.bytes);
         };
-        frame.contentWindow.postMessage({ type: 'homegames-client-port-v1' }, '*', [channel.port2]);
+        frame.contentWindow.postMessage({ type: 'homegames-client-port-v1', playerName: options.profile?.get() }, '*', [channel.port2]);
         if (!toolbar && createPlayerToolbar) {
             toolbar = createPlayerToolbar(window, { title: options.title, home: options.home, status: 'Starting game…',
                 onOpen: () => command('pause-input'), onClose: () => command('resume-input') });
@@ -85,18 +89,21 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
         for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Player closed')); } pending.clear(); } };
 }
 function connectClientSource(window, download, exports = {}, controls = {}) {
-    let port, closed = false, sequence = 0, resolveConnect, state;
+    let port, closed = false, sequence = 0, resolveConnect, state, playerName;
     const recordings = new Map();
     const connected = new Promise(resolve => { resolveConnect = resolve; });
     const connectTimer = setTimeout(resolveConnect, 15000);
     const listener = event => {
         if (closed || event.source !== window.parent || event.data?.type !== 'homegames-client-port-v1' || !event.ports[0]) return;
-        window.removeEventListener('message', listener); port = event.ports[0]; clearTimeout(connectTimer); resolveConnect();
+        window.removeEventListener('message', listener); port = event.ports[0]; playerName = event.data.playerName; clearTimeout(connectTimer); resolveConnect();
         if (state) port.postMessage({ type: 'player-state', ...state });
         port.onmessage = async event => {
             const message = event.data;
             if (!closed && message?.type === 'player-control' && Object.hasOwn(controls, message.action)) {
-                try { await controls[message.action](); } catch (error) { port.postMessage({type:'player-state', status:error.message}); }
+                try {
+                    if (message.action === 'player-name') playerName = message.value;
+                    await controls[message.action](message.value);
+                } catch (error) { port.postMessage({type:'player-state', status:error.message}); }
                 return;
             }
             if (message?.type === 'audio-result' || message?.type === 'export-result') { const entry = recordings.get(message.id); if (!entry) return; recordings.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.value); return; }
@@ -127,6 +134,7 @@ function connectClientSource(window, download, exports = {}, controls = {}) {
         });
     });
     return { setState(value) { state = { ...state, ...value }; if (!closed) port?.postMessage({ type:'player-state', ...state }); },
+        getPlayerName: async () => { await connected; return playerName; },
         recordAudio: info => request('record-audio', {recording:info}),
         recordVideo: info => request('record-video', {recording:info}),
         viewExports: () => request('view-exports'),
