@@ -1,118 +1,74 @@
-# Homegames — System Brain Dump (start here)
+# Homegames — System overview
 
-> If you're reading this to take over or understand Homegames end-to-end, this is
-> the front door. It's deliberately a complete "if I got hit by a bus" dump. The
-> sibling docs in this folder go deeper:
->
-> - **ARCHITECTURE.md** — every component, what it does, how they connect
-> - **FLOWS.md** — end-to-end traces (play, author+publish, signup, moderation, AI edit)
-> - **DATA-MODEL.md** — MongoDB collections, Forgejo repos, the asset store, identity
-> - **INFRA.md** — what physically runs where, domains, secrets inventory
-> - **OPERATIONS.md** — deploy/update/restart, logs, backups, failure playbook
-> - **homegames-context.md** — master LLM context: platform reference + the contract for writing games
+Reviewed against the current local code on October 12, 2026, including uncommitted changes. This is an implementation map, not a statement about production hosts or deployed versions.
 
----
+Homegames makes and plays JavaScript games using SquishJS. The current Studio is **account-free**: users create browser projects, edit source and media, save local snapshots, and export ZIPs or playable HTML. One browser runs the simulation; friends join that browser over WebRTC. A home server remains an optional way to discover/install games and run browser or Node/WebSocket sessions.
 
-## What Homegames is
+## What changed, and what remains
 
-Homegames is a platform for **making and playing simple multiplayer games in the
-browser with as little friction as possible.** No installs to play, a free
-in-browser studio to build, one click to publish to a public catalog.
+| Current path | State and dependencies |
+| --- | --- |
+| Studio projects | `studio-portable.js` + `studio-project-store.js`; IndexedDB on the current origin. No signup, verification, hosted source repository or cloud asset upload. |
+| Portable exports | Common validates source/media/manifest and packages an ordinary ZIP or a self-contained HTML player. No publish job is needed. |
+| Multiplayer | Browser host owns the game. Automatic invitations use RTC signaling and configured ICE servers; manual offer/answer can bypass Homegames signaling. |
+| Website collection | Build-selected local folders/ZIPs become static HTML pages and portable packs. Website Play loads the pack into an isolated browser host; invitations are private. |
+| Legacy catalog | Source and stored data remain for historical tooling; the active API no longer registers content endpoints. |
+| Account backend | Account/profile/publishing routes are absent from the active API. No automatic hosted-data migration or deletion is performed. |
+| Self-hosting | Core serves a dashboard/client, browser games and optional Node/WebSocket sessions. homegames.link discovery and certificate jobs remain separate services. |
 
-It started as an experiment: *could a server drive what a browser renders purely
-by sending drawing instructions over a WebSocket?* That worked, and it grew into
-a whole product — a serialization format (squish), a game runtime, a renderer, a
-catalog, an in-browser code studio, an asset pipeline, and an LLM that can write
-games for you. The guiding principle throughout is **minimum friction** for both
-players (nothing to install) and developers (build, share, done).
+Projects are not cloud-synchronized. Clearing browser storage can lose them. ZIP exports carry the selected source/media version; snapshot history and game progress need separate backups. Progress exists only when the game uses `saveGame`.
 
-Originally it was **self-hosted** (run the server at home, play on your LAN, and
-optionally expose it to the internet through a relay). It is now also — and
-primarily — offered as a **free hosted service at homegames.io**, so people can
-use it without running anything themselves. (The self-host relay,
-`homegames.link` / `public.homegames.link`, was a working experiment but is not
-actively maintained; see INFRA.md.)
+## Intended simplification and current gaps
 
-A second guiding principle is **operational simplicity**: the entire backend runs
-on a **single EC2 host** on purpose, so that anyone can stand up their own
-Homegames without orchestrating a fleet. (The one planned split is pulling the
-game-session runtime onto its own host for scalability — see INFRA.md.)
+The maintainer's intended destination is a static website serving bundled games and self-hosting downloads, an API limited to connection helpers (certificates, homegames.link and RTC), and player-owned games with bundled assets. Accounts, developer profiles and centralized publishing are to be retired. The website now builds that static collection from an explicit path list and serves game pages without JavaScript. The home dashboard now reads its local library. Legacy catalog/account source remains on disk, but the active API no longer loads those routes. Deployment retirement and historical-data migration are separate operational steps.
 
----
+Self-hosting and browser RTC already coexist with optional Node/WebSocket hosting. WebSocket hosting is a separate session mode, not automatic failover for a running RTC game. Core's local library discovers compatible unpacked game folders containing `index.js`, including those under `src/games` or `LOCAL_GAME_DIRECTORY`; portable projects may also declare a nested entry in `homegame.json`. Use the localhost dashboard’s Import ZIP button to validate and install an archive under app data; dropping an arbitrary ZIP into `src/games` does not install it. Current bundles ship all visible built-ins with local media, local RTC signaling and an explicit offline launch override; homegames.link/certificates are optional online helpers. Both transports carry Squish scene frames, but input/signaling/control messages also use JSON and media has separate transfer paths. A live Share invitation joins the host session; Share a copy sends an editable portable ZIP over a separate private RTC channel to a generic game-only receiver. The recipient builds/downloads a self-contained HTML and can keep an individual game app locally. Per-game manifests and bundles live on the device; the server has no game registration. Studio remains the authoring tool.
 
-## The 30,000-ft picture
+The licensing policy is GPL or MIT for Homegames-authored components. Existing license notices and package metadata still need reconciliation, and bundled third-party material may carry other licenses. This policy does not by itself relicense that material. See the [licensing audit](../../homegamesio/docs/code-audit.md#licensing-policy-and-current-notices).
 
-```
-            Players' browsers                 Developers' browsers
-                  │                                   │
-                  │ HTTPS (site, static)              │ HTTPS (studio UI + REST)
-                  ▼                                   ▼
-        ┌──────────────────┐                ┌──────────────────────────────┐
-        │ homegames.io      │                │  api.homegames.io  (the API) │
-        │ S3 + CloudFront   │                │  ── on ONE EC2 host: ──      │
-        │ (static site +    │                │   • API (Node)               │
-        │  studio + client) │                │   • MongoDB                  │
-        └──────────────────┘                │   • RabbitMQ                 │
-                  │ WebSocket (game frames)  │   • Forgejo (git for games)  │
-                  ▼                          │   • homegames-core + Docker  │
-        ┌──────────────────┐                │     (each live game session  │
-        │ game session      │◄───────────────│      runs in a container)    │
-        │ (homegames-core   │  spawns        │   • API worker (publish      │
-        │  in a container)  │                │     validation; NSFW is      │
-        └──────────────────┘                │     in-process in the API)   │
-                                            └──────────────────────────────┘
-                                                         ▲
-                                                         │ pulls jobs from RabbitMQ
-                                                         │ (LLM "AI edit" requests)
-                                              ┌────────────────────────┐
-                                              │ LLM worker (MLX)        │
-                                              │ Joseph's Mac Studio     │
-                                              │ (Apple Silicon, at home)│
-                                              └────────────────────────┘
+## Runtime and infrastructure
+
+```text
+Studio/static templates -> browser project library (IndexedDB)
+                         -> portable ZIP / standalone HTML
+                         -> isolated browser host <--- RTC ---> guest browsers
+                                      |
+                               signaling / ICE setup
+                                      |
+                      API /rtc, optional STUN/TURN
+
+Downloaded HTML -> RTC copy -> generic receiver -> saved HTML / individual game app
+Static website collection -> portable ZIP -> isolated browser host -> RTC guests
+Home dashboard Library -> installed folders + validated portable ZIP imports
+
+Home launcher -> Core dashboard -> browser play / household room discovery
+                              \-> optional Node session -> WebSocket clients
 ```
 
-Everything except the website (S3/CloudFront) and the LLM worker (a Mac Studio)
-runs on that **single EC2 instance**.
+Signaling arranges peers; it neither executes games nor receives their gameplay frames. TURN, when configured and needed, relays peer traffic. The host tab must remain alive; there is no host migration. Manual connections still depend on network reachability and may need infrastructure the manual UI does not configure.
 
----
+## Repository responsibilities
 
-## The repos and what each is
+| Repo | Current role |
+| --- | --- |
+| `homegamesio` | Static HTML game collection, portable packs, Studio project library, player and HTML guides. |
+| `homegames-common` | Shared runtime/input/filtering, portable format/execution/saves, RTC signaling, Node orchestration, config and authoring reference. |
+| `homegames-client` | Rendering/input, browser LocalSession, RTC host/guest transports and portable browser API. |
+| `squish` | Versioned scene model and serialization, distributed as `squishjs` and pinned aliases. |
+| `homegames-core` | Home dashboard, local library, Homenames, browser game serving, Node/WebSocket sessions and integration tests. |
+| `homegames` | Launcher/supervisor and downloadable server bundle builder/publisher. |
+| `api` | RTC signaling and IP/certificate helpers; legacy handlers/publish worker are not used by the active entry point. |
+| `worker` | Durable certificate, docs-question and legacy AI jobs; model bridge is configurable. |
+| `homegames.link` | LAN discovery/redirect and DNS registration; not a tunnel to private LAN addresses. |
+| `homegames-web` | Separate older browser host; Core also serves its client directly. |
 
-| Repo | Role |
-|------|------|
-| **squish** (`squishjs` on npm) | The serialization format + game node types + `Game`/`ViewableGame` base classes. The shared contract between server and client. Published as many pinned versions (`squish-135`, `squish-138`, `squish-140`, …) so old games keep working. |
-| **homegames-common** | Shared library used across the backend: game loading (`game-loader`), the Docker runner + per-session manager (`docker-helper`, `game-session-manager`), config/util, and **this documentation** (single source of truth, incl. the authoring guide). |
-| **homegames-core** | The game-session server. Loads a published game, runs it, squishes its scene graph, and streams frames to connected browsers over WebSocket. Each live session runs in a Docker container (`docker/` holds the runner image + `validate.js`). |
-| **homegames-client** | The browser rendering engine: connects over WebSocket, unsquishes frames, draws to a `<canvas>`, captures input, manages assets. Bundled and served to players. |
-| **homegames-web** | A tiny static server for the self-host path (serves the client bundle + a config). Largely superseded by homegames.io for the hosted service. |
-| **homegamesio** | The public website (`homegames.io`): landing pages, the **catalog**, the **play** page, the **Studio** (in-browser game editor), the **Admin** moderation console, and the password-reset/verify pages. Served from S3+CloudFront; `app.js` is the Node origin for HTML routes. |
-| **api** | The backend REST API (`api.homegames.io`): auth (signup/login/email-verify/reset), the Studio backend (Forgejo-backed editing + publish requests), the catalog, asset upload (+ **in-process NSFW classification**), admin endpoints, and the **publish-validation worker** (`worker.js`). |
-| **worker** | The **LLM worker** that processes Studio "AI edit" requests. A Node parent (`index.js`) pulls jobs from RabbitMQ and drives a long-lived Python **MLX** model server (`llm/model_server.py`). Runs on the Mac Studio. |
+## Read next
 
-External services on the host: **MongoDB** (all app data), **RabbitMQ** (job
-queues), **Forgejo** (a self-hosted GitHub-like git server — every game's source
-lives in a Forgejo repo).
+- [ARCHITECTURE.md](ARCHITECTURE.md): modules and execution boundaries.
+- [FLOWS.md](FLOWS.md): editing, exports, play, sharing and retained publishing.
+- [DATA-MODEL.md](DATA-MODEL.md): browser projects/progress, room state and retained backend data.
+- [INFRA.md](INFRA.md): dependencies, config and ports supported by code.
+- [OPERATIONS.md](OPERATIONS.md): building, staging, backups and troubleshooting.
+- [homegames-context.md](homegames-context.md): detailed authoring contract.
 
----
-
-## Bus-factor essentials (the absolute must-knows)
-
-1. **One EC2 host runs almost everything** (API, Mongo, RabbitMQ, Forgejo,
-   homegames-core+Docker, the API worker) via **systemd services**; logs are in
-   **journalctl**. See OPERATIONS.md.
-2. **The website is static** (S3 + CloudFront), deployed with `homegamesio/deploy.sh`.
-3. **The LLM worker is a Mac Studio at home** that pulls from the EC2's RabbitMQ.
-   If it's off, "AI edit" in the Studio just doesn't process — nothing else breaks.
-4. **Game source lives in Forgejo**, one repo per game, owned by the user's
-   *internal id* (not their display name). MongoDB holds metadata + which commit
-   is published. See DATA-MODEL.md.
-5. **Publishing = running untrusted code.** A submitted game is AST-scanned and
-   run in a locked-down Docker container before it's allowed to publish. The
-   live containment and the validation gate are in `homegames-common/docker-helper.js`
-   and `api/worker.js` + `api/ast-scanner.js`. Read `homegames-core/../security_notes.md`
-   before scaling this up.
-6. **squish is versioned and pinned.** A game declares `squishVersion`; the server
-   squishes with that version and the client unsquishes with the matching one.
-   Never break an old squish version — publish a new one.
-7. **Secrets** (JWT, Forgejo webhook + user-password derivation, LLM worker, AWS,
-   SES, Mongo) are inventoried in INFRA.md.
+Source entry points: `homegamesio/studio.js`, `studio-portable.js`, `studio-project-store.js`, `client.js`, `play.html`; common `portable-*.js`, `rtc-signaling.js`, `session-runtime.js`; `api/index.js`, `router.js`; `homegames-core/game_server.js`. Follow executing branches rather than commented rollback implementations.

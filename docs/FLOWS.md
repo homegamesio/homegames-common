@@ -1,125 +1,73 @@
-# Homegames — End-to-End Flows
+> Website flow update, October 12: build-selected folders/ZIPs supply the static HTML collection and game packs. Website Play uses isolated portable execution and private RTC invitations. Legacy catalog/public-room source is not registered by the active API; see the [website README](../../homegamesio/README.md).
 
-Traces through the system for the things that matter. See ARCHITECTURE.md for the
-components named here.
+# Homegames — End-to-end flows
 
----
+These traces follow current code, reviewed October 11, 2026. The active entry point no longer exposes account-backed paths.
 
-## 1. Playing a game (hosted)
+## 1. Create, edit and save a browser project
 
-1. Player opens `homegames.io` (S3/CloudFront) and picks a game from the catalog,
-   or hits a play link with a `gameId`/`versionId`.
-2. The page asks the **API** to create/find a **session** for that published
-   version. The API (via **Homenames** + homegames-core) ensures a
-   **homegames-core session is running in a Docker container** for that game and
-   returns a WebSocket endpoint/port.
-3. The **homegames-client** (bundled in the page) opens the WebSocket. The server
-   sends an **init** message (player id, aspect ratio, bezel, and the game's
-   **squishVersion**), then the **asset bundle** (type 1), then **state frames**
-   (type 3).
-4. The client picks the matching `unsquish` for that squishVersion, decodes each
-   frame, and **renders** polygons/text/images to the canvas (0–100 space → pixels).
-5. Player input (click/key/touch) is normalized to 0–100 and sent back over the
-   socket; homegames-core routes it to the game instance's handlers
-   (`onClick`, `handleKeyDown`, …), which mutate state; the `Squisher` coalesces
-   and broadcasts the next frame.
-6. Per-player visibility (`playerIds`) means each player can receive a different
-   frame — the server only squishes what that player should see.
+1. `/studio.html` loads the editor and portable integration. No login is requested.
+2. **New game** fetches `/studio-templates.json` and the selected static ZIP. **Import ZIP** reads a supplied archive. Common validates source/manifest/media/inventory as data.
+3. Studio writes the project to `homegames-studio-projects` IndexedDB under a fresh installation ID. Editing source or adding media auto-saves drafts, including unfinished code.
+4. A generation check catches concurrent-tab writes. Failed or quota-blocked writes stay visibly unsaved; the user can keep a copy or reload the saved version.
+5. **Versions → Save snapshot** stores a named copy of source/media. Open snapshot is read-only; Restore snapshot backs up the draft and restores the selected files/name atomically. Progress is separate.
 
-Multiple players share **one** game instance (it's authoritative); there is no
-per-player game process.
+Source: `homegamesio/studio-portable.js`, `studio-project-store.js`, common `portable-project.js`.
 
----
+## 2. Play, share and export a project
 
-## 2. Authoring + publishing a game
+1. Play validates the selected files and embeds the project/runtime in an opaque-origin iframe.
+2. The parent attaches an installation/schema-scoped progress channel. The iframe loads the game and runs one LocalSession.
+3. **Share** creates a private RTC invitation; guests render their filtered view and send input to this same game. The game source is not transferred as an editable project.
+4. **Manual connection** exchanges offer/answer text without Homegames signaling. Each peer needs a loaded/downloaded player. STUN is optional; some networks need TURN, which the manual UI does not configure.
+5. **Export ZIP** packages the selected source/media with an integrity inventory. **Download HTML** bundles a runnable copy and gives that export a fresh installation ID. Neither includes snapshot history or existing game progress.
+6. **Download save / Load save** moves compatible JSON progress independently. `saveGame` resolves after the parent's IndexedDB transaction commits.
 
-**Author (in the Studio):**
-1. User signs in to the Studio (`homegames.io/studio`). On first studio action the
-   API lazily provisions them a **Forgejo account** (username = their internal
-   `userId`; password derived by HMAC from `FORGEJO_USER_SECRET`).
-2. "New Game" → API creates a **Forgejo repo** (`<userId>/<repo>`), commits a
-   GPLv3 `LICENSE` + a chosen starter template, and a `games` record in Mongo.
-3. Editing in the Studio writes files via the API → Forgejo commits (the **Save
-   Version** path). They can Preview (a real session of the working tree), use
-   **AI Edit**, set Description/Thumbnail in **Settings**, etc.
-4. They can also `git clone` the repo (Settings → Clone) and push from the CLI.
+Stopping/restarting the preview or closing its host ends that game. The catalog needs a network load; Studio caches its editor/player/templates/examples/guide for offline use. A downloaded HTML supports offline local play. Manual mode supports scene/media-file/input transport, not live camera/microphone streams.
 
-**Publish pipeline:**
-5. **Publish** (or a Forgejo push webhook) → the API enqueues a job on RabbitMQ.
-   Webhooks are HMAC-verified (`FORGEJO_WEBHOOK_SECRET`).
-6. The **API worker** (`api/worker.js`) consumes `publish_requests` and validates
-   the target commit:
-   - `index.js` exists; a **GPLv3 LICENSE** matches; size limits OK.
-   - **AST scan** (`ast-scanner.js`) every `.js`: no banned `require`s (fs, net,
-     child_process, …), no `eval`/`Function`, no dynamic `require`/`import`, etc.
-   - **Docker validation** (`validateGame`): load the class, check `metadata()`
-     + `squishVersion`, instantiate, run ~5s in a **no-network, read-only**
-     container; collect asset ids.
-   - **NSFW**: the game's assets already carry an `nsfw` flag (set at upload —
-     see flow 6); if any are flagged, the version is marked nsfw.
-7. On success it writes a `gameVersions` record with `published: true`
-   (+ `commitSha`). The game is now in the catalog and launchable; sessions run
-   that exact pinned commit.
+Source: common `portable-html.js`, `portable-saves.js`, client `src/rtc-manual.js` and `src/local-session.js`.
 
-> Trust boundary: publishing **is** running attacker-controlled code. The AST scan
-> is a filter; the Docker container is the real boundary. See `security_notes.md`.
+### Send an independent copy and keep it offline
 
----
+1. Studio or a newly exported playable HTML offers **Share a copy**, creating a private signaling room separate from live multiplayer.
+2. The invitation opens `/game-app.html?game=<uuid>&revision=<hash>#copy=…`. RTC sends an offer until the recipient accepts. The portable ZIP then travels in acknowledged 64 KiB chunks; the API carries SDP/ICE, never game files. TURN may relay encrypted transport.
+3. The receiver validates the hash, inventory, UUID and revision without executing source, then builds a standalone HTML with the static site's trusted runtime. **Download game HTML** saves the file; **Download project ZIP** permits explicit import into Studio. Local persistence failure leaves the completed HTML downloadable.
+4. **Play** starts an opaque iframe with installation-scoped saves. Saved app URLs launch directly on subsequent visits; the player shell and complete game HTML are kept locally for offline use. A downloaded HTML also plays directly in a desktop browser and can share onward after its original sender closes.
+5. For iOS/iPadOS, use Safari's Add to Home Screen on the game's receiving page, open that game icon, then receive or import inside the app. Safari storage does not populate app storage. The locally generated manifest retains the private invitation fragment for first launch. No game registration/upload is required: the host serves the same generic page for every game.
+6. Keep HTML/progress backups against browser storage clearing or eviction. A raw downloaded HTML in iOS Files is not itself an installable PWA. Physical Add to Home Screen verification remains a release check.
 
-## 3. Developer signup + email verification
+Source: client `src/rtc-copy.js`, `src/rtc-copy-protocol.js`; common `portable-html.js`; website `game-app.js`, `game-app-storage.js`, `game-app-sw.js`, `scripts/build-game-app.js`. Receipts/imports get fresh local save identities; progress migration is explicit. Existing old HTML exports retain their embedded runtime until re-exported.
 
-1. Studio signup form posts `{ displayName, email, password }` to `/auth/signup`.
-2. API creates a user: generated internal **`userId`** (canonical identity),
-   separate **immutable `displayName`**, `verified: false`, a hashed **6-digit
-   code** (24h expiry). A JWT is returned (they're logged in but unverified).
-3. SES emails the **code** (not a link — avoids email-client prefetch consuming
-   it).
-4. In the Studio, the unverified banner takes the code → `POST /auth/verify`
-   (authenticated, scoped to the user) → `verified: true`.
-5. **Gating:** unverified users can browse/edit but the API blocks the
-   abuse-surface routes (`requiresVerified`): create game, save, publish, AI edit,
-   asset upload, thumbnail. Playing/browsing is fully anonymous and ungated.
+## 3. Play an existing catalog game
 
-Forgot password (`/auth/forgot` → `/auth/reset`) mirrors this: anti-enumeration
-(always 200), 8-char emailed code, 1h expiry, rate-limited; standalone page at
-`/reset-password`.
+1. `client.js` fetches game metadata, published versions and a local-play manifest from the API.
+2. An eligible Play action opens `/play.html?localGame=…&ref=…`. The player loads source/assets and starts a browser LocalSession; it does not call the old Node session-create path.
+3. Website games use private RTC rooms. Share reuses the room; invitations carry a capability.
+4. Homepage/catalog/game discovery reads `GET /rooms`. Only live public catalog rooms are listed; stale catalog host leases expire after 90 seconds without updates.
+5. Guests join the browser host. A newer published version does not change a running host or a previously downloaded HTML.
 
----
+Catalog downloads still use the API's catalog HTML builder and retained catalog save identity. They are distinct from Studio portable exports. Games requiring `contentGenerator` cannot use browser play/download.
 
-## 4. Asset upload + moderation
+Source: `homegamesio/client.js`, `play.html`, `api/handlers.js`, common `rtc-signaling.js`, `local-play.js`.
 
-1. Studio Assets workspace → Upload/Draw/Record/Keyboard → `POST /asset`.
-2. The API stores asset metadata in `assets` and binary data in `documents`
-   (MongoDB Binary), and **synchronously classifies the image** in-process
-   (`nsfw.js`, TensorFlow `nsfwjs`); the `nsfw` flag is saved on the asset.
-3. Assets are served back at `/assets/:id` and referenced from games by id.
-4. Admins moderate via `/admin` (delete asset, flag/unflag NSFW). Publishing a
-   game inherits its assets' NSFW status.
+## 4. Home server play
 
----
+1. The launcher starts Core; Core serves the dashboard and browser client on `HOME_PORT`.
+2. The dashboard loads built-in/installed games and can download catalog games. Browser Play hosts a LocalSession in the tab and advertises household rooms through the home's room registry.
+3. The separate Node/WebSocket hosting action asks the shared session manager for a child port. Docker is preferred; an explicit fork opt-in permits a child process if Docker is unavailable.
+4. WebSocket clients connect directly to that child. Input and recipient filtering use the shared runtime.
+5. Optional homegames.link discovery redirects LAN visitors to the local server. Certificates are acquired through API/worker services; discovery is not an internet tunnel.
 
-## 5. Moderation / admin
+With `START_PATH`, Core defaults to serving a browser-hosted direct-start game instead of the dashboard; `START_MODE: "server"` selects the Node path.
 
-1. Admin (a user with `isAdmin: true` in Mongo — set manually to bootstrap) opens
-   `/admin`.
-2. The console lists/searches **users / games / assets** (paginated), shows
-   **stats**, **publish requests** (approve/reject), and **support messages**
-   (acknowledge) — all gated server-side on `isAdmin`.
-3. **Delete user** (`DELETE /admin/developers/:id`) cascades: their Forgejo
-   repos, the Forgejo account, search index entries, and all Mongo data (games,
-   versions, publishRequests, builds, assets, documents, user). One click removes
-   everything they made.
+Source: `homegames-core/game_server.js`, `src/dashboard/`, `src/util/browser-game-server.js`, `src/util/household-rooms.js`, common `game-session-manager.js`.
 
----
+## 5. User exports and game copies
 
-## 6. AI "edit my game" (LLM)
+The game calls `createExport(name, bytes)`. The session persists raw bytes and makes them available through `userExports` on the next launch. Node stores these in the game's `user-exports/` directory; browser hosts persist them locally. Download/share packages these files alongside unchanged source and default assets. See [the contract](ARCHITECTURE.md#game-defined-user-exports).
 
-1. Studio → AI Edit → `POST /studio/games/:id/llm-modify` with a prompt; the API
-   enqueues an `LLM_REQUEST` on RabbitMQ.
-2. The **Mac Studio worker** pulls the job, the MLX model server rewrites
-   `index.js` grounded by the **authoring guide** (system prompt), with
-   validation-error retries.
-3. The worker posts the result back to the API (auth'd by `LLM_WORKER_SECRET`);
-   the Studio polls status and drops the rewrite into the editor as an **unsaved
-   change** for the user to review + save.
-4. If the Mac is offline, jobs simply wait — nothing else is affected.
+## 6. Certificates and retired services
+
+The API validates the caller's CSR for its assigned network domain and queues a certificate job. The worker performs issuance; the client polls `/cert-status`. RTC signaling is enabled unless explicitly disabled. Neither connection flow requires a Homegames account or central game registration.
+
+Account, publishing, remote asset and docs-AI handlers are retained source, not active routes. Existing hosted records are not erased or imported automatically.

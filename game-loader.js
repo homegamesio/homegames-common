@@ -11,7 +11,8 @@ const os = require('os');
 const squishMap = {
     '142': 'squish-142',
     '143': 'squish-143',
-    '145': 'squish-145'
+    '145': 'squish-145',
+    '146': 'squish-146'
 };
 
 const DEFAULT_SQUISH_VERSION = '142';
@@ -77,7 +78,8 @@ const detectSquishVersion = (code) => {
 const loadGameClassFromPath = (gamePath) => {
     const resolved = path.resolve(gamePath);
     delete require.cache[require.resolve(resolved)];
-    return require(resolved);
+    // return require(resolved); // Legacy asset-ID-only loading.
+    return require('./local-game-assets').bindGameAssets(require(resolved), resolved);
 };
 
 // ---------------------------------------------------------------------------

@@ -27,35 +27,13 @@ const decodeFileInput = (raw, useBuffer = false) => {
     return null;
 };
 
-// Classify uploaded bytes by magic numbers. Authoritative over the
-// client-reported mime, which is spoofable and often missing.
-const sniffFileKind = (b) => {
-    if (b.length > 3 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return 'image'; // PNG
-    if (b.length > 2 && b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return 'image';                  // JPEG
-    if (b.length > 2 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image';                  // GIF
-    if (b.length > 11 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) {              // RIFF
-        if (b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image';           // WEBP
-        if (b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45) return 'audio';           // WAVE
-    }
-    if (b.length > 2 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33) return 'audio';                  // MP3 (ID3)
-    if (b.length > 1 && b[0] === 0xFF && (b[1] & 0xE0) === 0xE0) return 'audio';                          // MP3 (frame sync)
-    if (b.length > 3 && b[0] === 0x4F && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53) return 'audio'; // Ogg
-    if (b.length > 3 && b[0] === 0x66 && b[1] === 0x4C && b[2] === 0x61 && b[3] === 0x43) return 'audio'; // FLAC
-    if (b.length > 11 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) return 'audio'; // MP4/M4A (ftyp)
-    return null;
-};
-
-// Meta passed as oninput's third argument.
+const { describeMedia } = require('./media-upload');
 const buildFileMeta = (bytes, input) => {
-    const contentType = (typeof input.contentType === 'string' && input.contentType.length <= 100)
-        ? input.contentType : null;
-    let kind = sniffFileKind(bytes);
-    if (!kind && contentType) {
-        if (contentType.indexOf('image/') === 0) kind = 'image';
-        else if (contentType.indexOf('audio/') === 0) kind = 'audio';
-    }
-    const fileName = typeof input.fileName === 'string' ? input.fileName.slice(0, 128) : null;
-    return { kind, contentType, fileName };
+    const media = describeMedia(bytes, input);
+    // Preserve the callback's reported MIME for existing games. Classification
+    // recognizes container formats separately from their audio/video hints.
+    const contentType = typeof input.contentType === 'string' && input.contentType.length <= 100 ? input.contentType : null;
+    return { ...media, contentType };
 };
 
 class GameDispatcher {
@@ -93,6 +71,13 @@ class GameDispatcher {
                 // Only sent while the pointer/finger is held down — drives
                 // drag handlers (game.handleMouseMove + pressed node's onDrag)
                 this._handleDragMove(pid, input.data);
+            } else if (input.type === 'pointermove') {
+                // Pointer Lock sends relative mouse motion without a held
+                // button. Keep it separate from absolute, scaled drag input.
+                const delta = input.data;
+                if (!delta || !Number.isFinite(delta.dx) || !Number.isFinite(delta.dy)
+                    || Math.abs(delta.dx) > 4096 || Math.abs(delta.dy) > 4096) return;
+                this.game.handlePointerMove?.(pid, { dx: delta.dx, dy: delta.dy });
             } else if (input.type === 'input') {
                 if (input.gamepad) {
                     this.gameInput.gamepad(pid, input);

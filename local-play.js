@@ -47,9 +47,11 @@ const _literal = (node) => (node && node.type === 'Literal') ? node.value : unde
  * Extracts { squishVersion, name, services, assets } from a game's entry
  * source by finding `static metadata()` and reading literal values out of its
  * returned object. Values that aren't static literals are simply omitted.
+ * Core opts into project-relative paths; the hosted API still loads legacy
+ * asset IDs from its database and retains that behavior by default.
  * Returns { error } if the source doesn't parse or has no metadata method.
  */
-const parseGameSourceMetadata = (source) => {
+const parseGameSourceMetadata = (source, { includePathAssets = false } = {}) => {
     let ast;
     try {
         ast = acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'script' });
@@ -87,6 +89,8 @@ const parseGameSourceMetadata = (source) => {
             meta.squishVersion = _literal(prop.value) || null;
         } else if (key === 'name') {
             meta.name = _literal(prop.value) || null;
+        } else if (['author', 'createdBy', 'description'].includes(key)) {
+            meta[key] = _literal(prop.value) || null;
         } else if (key === 'thumbnail') {
             meta.thumbnail = _literal(prop.value) || null;
         } else if (key === 'isTest') {
@@ -109,7 +113,9 @@ const parseGameSourceMetadata = (source) => {
                     for (const infoProp of v.arguments[0].properties) {
                         info[_propName(infoProp)] = _literal(infoProp.value);
                     }
-                    if (assetKey && info.id) {
+                    if (assetKey && includePathAssets && typeof info.path === 'string' && info.path.length) {
+                        assetsByKey[assetKey] = { key: assetKey, path: info.path, type: info.type || 'image' };
+                    } else if (assetKey && info.id) {
                         assetsByKey[assetKey] = { key: assetKey, id: info.id, type: info.type || 'image' };
                     }
                 }

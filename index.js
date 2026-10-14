@@ -105,6 +105,14 @@ const guaranteeDir = (dir) => new Promise((resolve) => {
 const getAppDataPath = () => {
     if (!process) return '';
 
+    // Explicit state root for portable installs and isolated release checks.
+    // Ordinary installs keep the platform's existing user-data location.
+    if (process.env.HG_APP_DATA_DIR) {
+        const dataDir = path.resolve(process.env.HG_APP_DATA_DIR);
+        fs.mkdirSync(dataDir, { recursive: true });
+        return dataDir;
+    }
+
     let _path;
     switch (process.platform) {
         case "darwin":

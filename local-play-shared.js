@@ -51,7 +51,23 @@ const resolveInFiles = (files, fromDir, request) => {
 // header [1, typeByte, 10-byte base36 length of (data+32), 32-byte key] + data.
 // ---------------------------------------------------------------------------
 
-const ASSET_TYPE_BYTES = { image: 1, audio: 2, font: 3 };
+const ASSET_TYPE_BYTES = { image: 1, audio: 2, font: 3, video: 4 };
+
+// Preserve complete Squish asset records while keeping RTC packets bounded.
+// Concatenating these slices produces the original, unchanged wire bytes.
+const splitAssetBundle = (bundle, maxBytes = 10 * 1024 * 1024) => {
+    const packets = []; let start = 0, offset = 0;
+    while (offset < bundle.length) {
+        const encoded = String.fromCharCode(...bundle.subarray(offset + 2, offset + 12));
+        const length = parseInt(encoded, 36) + 12;
+        if (bundle[offset] !== 1 || !/^[0-9a-z]{10}$/.test(encoded) || length < 44 || offset + length > bundle.length) throw new Error('Invalid asset bundle');
+        if (length > maxBytes) throw new Error('An asset exceeds the RTC packet limit');
+        if (offset + length - start > maxBytes) { packets.push(bundle.subarray(start, offset)); start = offset; }
+        offset += length;
+    }
+    if (offset > start) packets.push(bundle.subarray(start, offset));
+    return packets;
+};
 
 /**
  * @param {Array<{key: string, type: string, data: Uint8Array}>} entries
@@ -95,4 +111,29 @@ const packAssetBundle = (entries) => {
     return out;
 };
 
-module.exports = { normalizePath, resolutionCandidates, resolveInFiles, packAssetBundle, ASSET_TYPE_BYTES };
+// Loading differs by host (project files, retained bytes or a legacy Asset),
+// but the complete bundle and its per-key cache use this same encoder.
+const assetReads = new WeakMap();
+const loadAssetBundle = async (entries, readData, cache = Object.create(null)) => {
+    if (!assetReads.has(cache)) assetReads.set(cache, new Map());
+    const reads = assetReads.get(cache);
+    const packets = await Promise.all(entries.map(async entry => {
+        if (!Object.prototype.hasOwnProperty.call(cache, entry.key)) {
+            const read = {};
+            reads.set(entry.key, read);
+            const data = await readData(entry);
+            const packet = packAssetBundle([{ key: entry.key, type: entry.type, data }]);
+            // A failed bundle may leave another file read in flight. A retry
+            // can supersede it without letting its late result poison cache.
+            if (reads.get(entry.key) === read) cache[entry.key] = packet;
+            return packet;
+        }
+        return cache[entry.key];
+    }));
+    const bundle = new Uint8Array(packets.reduce((size, packet) => size + packet.length, 0));
+    let offset = 0;
+    for (const packet of packets) { bundle.set(packet, offset); offset += packet.length; }
+    return bundle;
+};
+
+module.exports = { normalizePath, resolutionCandidates, resolveInFiles, packAssetBundle, splitAssetBundle, loadAssetBundle, ASSET_TYPE_BYTES };

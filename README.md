@@ -1,66 +1,64 @@
 # homegames-common
 
-Shared Node library for the Homegames platform, consumed by every other repo as a `file:../homegames-common` dependency. No build step, no framework. It bundles four things:
+Shared Homegames runtime, portable-project tooling, configuration and authoring reference. Node consumers use `index.js`; browser consumers import individual browser-compatible modules through `homegames-client`. There is no build step in this package.
 
-1. **Utilities & config** — `getConfigValue` (env var → `config.json` → defaults), `getAppDataPath` (per-OS app-data dir), `log`, `getHash` (md5), `getUrl`, `guaranteeDir`.
-2. **The canonical squish version map + game loading** — `game-loader.js`.
-3. **The game-session runtime and orchestration** — `GameSession` and `GameSessionManager` (Docker or fork).
-4. **The master LLM context doc** — `docs/homegames-context.md` (whole-platform reference + squish.js authoring contract), exposed via `getAuthoringDoc()` / `authoringDocPath` and used to ground the LLM game-generation flow and docs assistant in [worker](../worker).
+This documentation describes the current working-tree implementation, reviewed October 11, 2026. It does not establish what is deployed. Start with [SYSTEM.md](docs/SYSTEM.md) for the platform map.
 
-## Squish versioning (`game-loader.js`, `link-squish.js`)
+## Current product paths
 
-This repo is the **single owner of squish versions**. It declares each release of [squish](../squish) as an npm alias (`"squish-142": "npm:squishjs@1.4.2"`, `"squish-143": "npm:squishjs@1.4.3"`) and exports the canonical `squishMap` + `DEFAULT_SQUISH_VERSION` (`'142'`).
+Studio in `homegamesio` creates account-free browser projects. Source, media and snapshots live in IndexedDB; projects export as ZIPs and playable HTML. Games run in a browser host and can invite RTC guests. Studio uses local projects only. The active API exposes connection helpers; legacy account/content source remains on disk but is not registered by its entry point.
 
-Because npm doesn't hoist a `file:` dependency's transitive deps, consumers (homegames-core, homegames-client) run `link-squish.js` as a postinstall step: it symlinks each `squish-*` package from this repo's `node_modules` into the consumer's, so bare `require('squish-142')` calls in game code resolve everywhere.
+**Share a copy** in Studio and new portable HTML exports sends the project ZIP over a separate private RTC connection. `homegames-client/src/rtc-copy*.js` handles consent, bounded transfer and integrity validation; signaling carries no archive payloads. The generic `/game-app.html` receiver builds and saves a self-contained playable HTML using the static site's trusted runtime. Recipients can download it, open it offline and share onward. Locally generated manifests identify individual game apps; saved app launches open the game directly. For peer copies, iOS users must receive/import inside the installed app because Safari storage is separate. Catalog links use this same player with a pinned static pack: a fresh Home Screen app downloads its own copy automatically on its first online launch, then starts locally thereafter. Studio remains the authoring tool, with explicit ZIP import for editing. Live **Share** still only joins the running host.
 
-`game-loader.js` also provides:
+Core also supports the home dashboard, browser-hosted play and optional Node/WebSocket game sessions. Browser play does not start a Docker container. The self-hosted dashboard reads its local library, imports portable ZIPs on localhost, and current bundles include local game media and RTC signaling for offline LAN play.
 
-- `parseSquishVersion(codePath)` — acorn AST parse of a game file to extract `metadata().squishVersion` without `require`-ing untrusted code
-- `loadGameClass(code, tmpDir)` / `loadGameClassFromPath(path)` — load a game class (cache-busting)
-- `fetchGameFromForgejo({forgejoUrl, forgejoToken, owner, repo, ref})` — download + extract a game repo archive, find the entry point, parse its squish version
-- `downloadToFile`, `findEntryPoint`
+Browser players share `player-toolbar.js`: one top row. Catalog play shows Home, title, Share and Download, with other tools linked from the static game details page. Self-hosted and standalone players keep View exports and More. Portable players put game downloads, save import/export, copy sharing and manual pairing in More; catalog installation instructions are reached from the game details page. The trusted parent owns this toolbar when a game runs in an opaque iframe, and `portable-client.js` carries client controls/state across its private MessagePort. Games and Squish do not depend on this browser UI.
 
-## Game sessions
+## Modules
 
-### `GameSession` (`game-session.js`)
+| Area | Implementation |
+| --- | --- |
+| Portable format | `portable-project.js`: validates manifest, paths, source imports and media without executing game code; reads/writes ZIPs with a generated integrity inventory. `portable-project-node.js` adapts filesystem access. |
+| Portable execution | `portable-runtime.js`: explicit-trust loader and project-scoped asset reads. `portable-html.js`: opaque-origin iframe players for Studio and HTML exports. The loader alone is not a sandbox. |
+| Portable progress | `portable-saves.js`: private MessagePort between game and parent; installation/schema-scoped IndexedDB, transaction acknowledgments, conflicts and JSON save import/export. |
+| Local/catalog loading | `local-play.js`, `local-play-shared.js`, `local-game-assets.js`: source maps, asset bundles and file-backed assets. Catalog asset IDs are a retained path, separate from portable file assets. |
+| Runtime | `game-session.js`: Node game lifecycle. `game-dispatch.js`: shared input dispatch. `session-runtime.js`: owned tick timer and per-recipient scene filtering for Node/WebSocket and LocalSession/RTC. |
+| Media | `media-upload.js`, `media-session.js`, `cursor.js`: file uploads, live media, per-player cursor declarations; Stream nodes are native to Squish 1.4.6. |
+| RTC | `rtc-signaling.js`: room discovery, invitations, host leases and SDP/ICE signaling. It does not run games or carry gameplay frames. |
+| Node orchestration | `game-session-manager.js`, `docker-helper.js`: ports, Docker/fork sessions, health, logs, lifecycle and publish-validation containers. |
+| Saves/config | `save-games.js`: retained Node/browser save backends. `index.js`: config, utilities, `authoringDocPath` and `getAuthoringDoc()`. |
 
-The in-process game runtime — one instance per running game. Resolves the squish package (`SQUISH_PATH` env override, else `squishMap[squishVersion]`), instantiates its `Squisher`, and handles:
+## Squish versions and loading
 
-- Player lifecycle: `addPlayer`/`removePlayer` (capacity from `metadata().maxPlayers`, default 64), spectators, per-player info/settings/clientInfo maps, Homenames integration when configured
-- Input dispatch: click hit-testing with bezel coordinate transforms, keydown/keyup, hover, gamepad, and file uploads (base64 or Uint8Array, 8MB cap, magic-byte sniffing — mirrored in homegames-client's `LocalDispatcher`)
-- Broadcasting: coalesces node mutations into one squish+send per event-loop turn; per-player frames honor `playerIds` visibility
-- Navigation opcodes to clients: `[5, portHi, portLo]` (join/move), `[6, ...]` (spectate)
-- Optional "frame" mode (bezel + HomegamesRoot handler) vs bare no-frame sessions
+`game-loader.js` exports `squishMap`, `DEFAULT_SQUISH_VERSION` (`142`), AST version parsing/detection, game class loaders and Forgejo archive loading. `detectSquishVersion(code)` is exported and supplies a fallback for raw-source sessions.
 
-### `GameSessionManager` (`game-session-manager.js`)
+Current Node map: **142, 143, 145, 146**. The 146 dependency is the sibling `squish` checkout; other entries are npm aliases. The browser's static map in `homegames-client/src/squish-map.js` includes **142, 143, 145**. Node availability does not imply browser support. Portable validation requires the manifest, source import and metadata to agree on a supported runtime.
 
-Give it a game — `{versionId, owner, repo, ref}` (Forgejo), `{gamePath}` (local), or `{code}` (raw source) — and it returns a port running a WebSocket game server. Used by the homegames-core Dashboard and by Homenames for API-created sessions.
+`link-squish.js` exposes this package's `squish-*` dependencies to consumers that use its postinstall hook. After a runtime change, install dependencies and rebuild the browser bundle and any affected Docker image. An already-exported HTML retains its embedded runtime.
 
-- **Docker path** (preferred when available): runs the game in the `homegames-runner` image via `docker-helper.js` — game code mounted read-only at `/app/game`, save data at `/app/save`, optional certs at `/certs`, `CapDrop ALL`, memory/pids/cpu limits, `AutoRemove`, host-gateway access back to Homenames.
-- **Fork path** (fallback): `fork()`s the consumer's `child_game_server.js` with a strict env allowlist (no secret leakage), `NODE_PATH`/`SQUISH_PATH` wired so `require('squish-NNN')` resolves, and a `--max-old-space-size` derived from `CHILD_SESSION_MEMORY_LIMIT` (default `196m`).
-- Port pool (default 7002–7099, overridable — homegames-core passes 8300–8400), max 50 sessions, lifecycle monitor that stops sessions empty past a grace period (default 30s) unless marked persistent, health checks via each session's `GET /health`, log streaming, and IPC/HTTP request-response to sessions.
+## Sessions
 
-### `docker-helper.js`
+`GameSession` handles player lifecycle, capacity (`metadata().maxPlayers`, default 64), spectator views, input, media and optional dashboard framing. `session-runtime.playerFrame` filters the combined serialized scene for **every** recipient, including inherited `playerIds` scopes; it never substitutes an unfiltered frame for a player without scoped nodes. This does not authorize game actions or make room-wide asset bytes private.
 
-Dockerode-based helpers: `isDockerAvailable`, `ensureImage`/`buildImage` (tars the Dockerfile dir straight to the Engine API — no shell), `runGameContainer` (live sessions, described above), and `validateGame` — the publish-time sandbox used by the [api](../api)'s worker: runs `validate.js` with `NetworkMode: 'none'`, read-only rootfs, 30s timeout, and parses a JSON verdict from stdout. The Dockerfile and container entry scripts live in the consumer (homegames-core's `docker/`); this module only builds/runs them.
+The dispatcher's file-input envelope is capped at 8 MiB; the shared media registration helper accepts supported image/audio/video files up to **5 MiB**. These are different limits.
 
-## docs/
+`GameSessionManager.startSession` accepts Forgejo coordinates, a local game path or raw code. It prefers Docker when ready. Without Docker it requires `allowFork` or `FORK_SESSIONS_ENABLED: true`; otherwise launch fails. Forked code runs with the host user's permissions. The manager defaults to ports 7002–7099, 50 sessions, a 3-second lifecycle check and a 30-second empty-session grace period; callers can override these. Core's source config uses 8300–8400. Persistent sessions bypass empty-session cleanup.
 
-- **`homegames-context.md`** — the load-bearing, actively maintained master LLM context doc, verified against the real code. Part I: whole-platform reference (playing, studio, publishing, self-hosting, internals) — grounds the [worker](../worker)'s docs assistant. Part II: the squish.js authoring contract (what a game is, the AST-scan + Docker-sandbox constraints, the 0–100 coordinate model, hosted vs local sessions) — grounds LLM game generation. Mirrored on homegames.io at `/authoring-guide`.
-- `SYSTEM.md`, `ARCHITECTURE.md`, `FLOWS.md`, `DATA-MODEL.md`, `INFRA.md`, `OPERATIONS.md` — whole-platform background docs with self-described `TODO: confirm` markers; useful context, not authoritative per-repo documentation.
+Docker sessions mount game code read-only, use resource limits, and can mount save data/certs. `docker-helper.validateGame` is the retained hosted-publishing sandbox; it is not invoked by portable ZIP export.
 
 ## Configuration
 
-`getConfigValue(key, default)`: `process.env[key]` wins (with `'true'`/`'false'` coercion), then the first `config.json` found in app-data dir → cwd → main-module dir → this package's dir, then `DEFAULT_CONFIG`/the passed default. `DEFAULT_CONFIG` doubles as the shared config schema for consumers (`API_URL: https://api.homegames.io`, `LINK_URL: wss://homegames.link`, `LINK_PROXY_URL: wss://public.homegames.link:81`, ports, etc.) — most of those keys are read by consumers, not by this library itself.
+`getConfigValue` checks environment variables first (`true`/`false` strings are converted to booleans), then the merged config. `getConfig` selects the first base `config.json` from cwd, main-module directory or this package; without a base it uses `DEFAULT_CONFIG`. The application-data `config.json` overlays that base key by key. `setConfigValue` updates the user overlay and clears the cache. Ports/TLS still need the appropriate listener restart.
 
-## Consumers
+`HG_APP_DATA_DIR` overrides the normal per-OS application-data directory. Explicit defaults at call sites also matter; consult the code instead of assuming every missing key is merged from `DEFAULT_CONFIG`.
 
-All via local `file:` links (nothing resolves from the npm registry): [homegames-core](../homegames-core) (heaviest — sessions, config, loader), [homegames-web](../homegames-web), [homegames-client](../homegames-client), [worker](../worker) (authoring doc only), homedome (validation pipeline), [homegames.link](../homegames.link) (an older published version).
+## Documentation and checks
 
-## Known issues (as of this writing)
+This package is licensed under GPLv3 (`GPL-3.0-only`); see [LICENSE.md](LICENSE.md). Homegames core and Squish use the same license. Dependency and media notices remain applicable.
 
-- **Bug:** `game-session-manager.js` imports `detectSquishVersion` from `game-loader`, which doesn't export it — any `startSession({code})` (raw-code) call throws. The Forgejo and `gamePath` paths are unaffected.
-- `postUrl` (index.js) and the `stateHistory` field in `GameSession` are dead; `loadGameClassFromPath` is imported but unused in the manager.
-- `lifecycleCheckMs` JSDoc says 10000 but the code default is 3000.
-- The `hg-games/` directory is an empty leftover; nothing here uses it.
-- There are no tests (`npm test` errors).
+- [SYSTEM.md](docs/SYSTEM.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), [FLOWS.md](docs/FLOWS.md), [DATA-MODEL.md](docs/DATA-MODEL.md), [INFRA.md](docs/INFRA.md), [OPERATIONS.md](docs/OPERATIONS.md): current platform/reference paths and retained services.
+- [homegames-context.md](docs/homegames-context.md): shared game-authoring and platform reference, consumed by Studio's Guide and the worker; the website serves it at `/authoring-guide.md`.
+
+`npm test` here is still a placeholder that exits unsuccessfully. Integration coverage lives in `homegames-core/test` and `homegamesio/test`; run the checks relevant to a changed module. Consumer package manifests determine which siblings must be installed. A local `file:` dependency is not proof that a running deployment has the latest files.
+
+Games receive `createExport(name, Uint8Array)` and a `userExports` byte map from their session. Hosts own storage paths and include these files in game copies. See [the user export contract](docs/ARCHITECTURE.md#game-defined-user-exports).

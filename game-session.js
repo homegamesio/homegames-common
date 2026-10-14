@@ -20,10 +20,13 @@
  */
 
 const WebSocket = require('ws');
+const { ProjectTransferHost } = require('./project-transfer');
 const GameDispatcher = require('./game-dispatch');
-const { createSessionRuntime, playerFrame } = require('./session-runtime');
+const { createSessionRuntime, playerFrame, collectGameAssets } = require('./session-runtime');
+const { packAssetBundle, loadAssetBundle } = require('./local-play-shared');
 const { squishMap, DEFAULT_SQUISH_VERSION } = require('./game-loader');
 const { MAX_SAVE_DATA_BYTES, SAVE_PUSH_OPCODE, SAVE_REQUEST_OPCODE } = require('./save-games');
+const { normalizeCursor, encodeCursor } = require('./cursor');
 
 // Simple name generator for anonymous players
 const _NAME_WORDS = [
@@ -39,15 +42,16 @@ const _generateName = () => {
 
 class GameSession {
     constructor(game, squishVersion, opts = {}) {
-        const squishPkg = process.env.SQUISH_PATH
-            || squishMap[squishVersion]
-            || squishMap[DEFAULT_SQUISH_VERSION];
+        if (!squishMap[squishVersion || DEFAULT_SQUISH_VERSION]) throw new Error(`Unsupported Squish version: ${squishVersion}`);
+        const squishPkg = squishMap[squishVersion || DEFAULT_SQUISH_VERSION];
         if (!squishPkg) {
             throw new Error(`No squish package found for version "${squishVersion}"`);
         }
-        const { Squisher } = require(squishPkg);
+        const codec = require(squishPkg);
 
         this.game = game;
+        this.media = opts.media || null;
+        this.sessionAssets = new Map();
         this.squishVersion = squishVersion;
         this.port = opts.port || null;
         this.username = opts.username || null;
@@ -67,15 +71,10 @@ class GameSession {
         // Squisher setup
         const squisherOpts = {
             game,
+            userExportsStore: opts.userExportsStore,
+            assetLoader: opts.assetLoader,
             scale: this.scale,
-            onAssetUpdate: (newAssetBundle) => {
-                for (const pid in this.players) {
-                    this._send(this.players[pid], newAssetBundle);
-                }
-                for (const sid in this.spectators) {
-                    this._send(this.spectators[sid], newAssetBundle);
-                }
-            },
+
         };
 
         if (this.frameEnabled) {
@@ -90,7 +89,9 @@ class GameSession {
             };
         }
 
-        this.runtime = createSessionRuntime(Squisher, game, squisherOpts);
+        this.runtime = createSessionRuntime(codec, game, squisherOpts);
+        this.projectTransfers = new ProjectTransferHost({ exportProject: id => this.exportProject(id),
+            listExports: () => this.runtime.listExports(), readExport: (_, name) => this.runtime.readExport(name) });
         this.squisher = this.runtime.squisher;
         // Coalesce broadcasts: a single game tick often mutates many nodes, each
         // firing onStateChange -> a listener call. Without coalescing that's one
@@ -112,6 +113,7 @@ class GameSession {
         this.playerInfoMap = {};
         this.clientInfoMap = {};
         this.playerSettingsMap = {};
+        this.playerCursors = new Map();
         this.remotePlayerMap = {};
         this.stateHistory = [];
 
@@ -167,6 +169,7 @@ class GameSession {
         if (this.squisher.assetBundle) {
             this._send(ws, this.squisher.assetBundle);
         }
+        for (const packet of this.sessionAssets.values()) this._send(ws, packet);
 
         if (this.homenames) {
             const notifyPlayer = (extraInfo) => {
@@ -272,6 +275,8 @@ class GameSession {
     }
 
     removePlayer(playerId) {
+        this.projectTransfers.leave(Number(playerId));
+        this.media?.leave(Number(playerId));
         try { this.gameInput?.removePlayer(Number(playerId)); }
         catch (error) { console.error('[GameSession] Error releasing input:', error); }
         // Disconnect mid-drag counts as releasing — games need the drag-end
@@ -298,6 +303,7 @@ class GameSession {
         delete this.playerInfoMap[playerId];
         delete this.clientInfoMap[playerId];
         delete this.playerSettingsMap[playerId];
+        this.playerCursors.delete(Number(playerId));
         delete this.remotePlayerMap[playerId];
     }
 
@@ -314,6 +320,7 @@ class GameSession {
         if (this.squisher.assetBundle) {
             this._send(ws, this.squisher.assetBundle);
         }
+        for (const packet of this.sessionAssets.values()) this._send(ws, packet);
 
         try {
             if (this.frameHandler && this.frameHandler.handleNewSpectator) {
@@ -365,6 +372,11 @@ class GameSession {
     // Input handling
     // -----------------------------------------------------------------------
 
+    exportProject(playerId) {
+        if (!this.players[playerId]) return Promise.reject(new Error('Join the game before requesting a copy'));
+        return this.runtime.exportProject(Number(playerId));
+    }
+
     handleInput(playerId, input) {
         if (!input || typeof input !== 'object' || typeof input.type !== 'string') return;
         if (!this.players[playerId] && !this.spectators[playerId]) return;
@@ -372,6 +384,18 @@ class GameSession {
         const pid = Number(playerId);
 
         try {
+            if (input.type === 'media' && this.players[playerId] && this.media) {
+                if (input.action === 'hello') {
+                    this.media.join(pid, { live: false, recording: input.recording === 1 || input.recording === 2, audioRecording: input.recording === 2,
+                        send: message => this._send(this.players[playerId], Buffer.concat([Buffer.from([16]), Buffer.from(JSON.stringify(message))])),
+                        addMedia() {}, removeMedia() {} });
+                } else this.media.handle(pid, input);
+                return;
+            }
+            if (input.type === 'project-transfer') {
+                if (this.players[playerId]) void this.projectTransfers.handle(pid, input, bytes => this._send(this.players[playerId], bytes));
+                return;
+            }
             if (input.type === 'saveData') {
                 // Answer to a SAVE_REQUEST_OPCODE frame — platform plumbing,
                 // never forwarded to the game. Content is validated again by
@@ -410,6 +434,30 @@ class GameSession {
                 this._send(this.spectators[sid], newBundle);
             }
         });
+    }
+
+    // Platform-managed uploads use the common bundle encoder, including video,
+    // without depending on an older Squish release's private asset type map.
+    async registerSessionAsset(key, asset) {
+        const packet = packAssetBundle([{ key, type: asset.info.type, data: asset.data }]);
+        this.sessionAssets.set(key, packet);
+        // Preserve Squish's per-player audio filtering for these assets too.
+        if (this.squisher.gameAssets) this.squisher.gameAssets[key] = asset;
+        for (const ws of [...Object.values(this.players), ...Object.values(this.spectators)]) this._send(ws, packet);
+    }
+
+    // -----------------------------------------------------------------------
+    // Player cursor
+    // -----------------------------------------------------------------------
+
+    setCursor(playerId, cursor) {
+        const id = Number(playerId);
+        const ws = this.players[id];
+        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        const normalized = normalizeCursor(cursor);
+        this.playerCursors.set(id, normalized);
+        this._send(ws, encodeCursor(normalized));
+        return true;
     }
 
     // -----------------------------------------------------------------------
@@ -516,7 +564,10 @@ class GameSession {
     }
 
     destroy() {
+        this.projectTransfers.close();
+        this.media?.destroy();
         this.runtime.stop();
+        this.sessionAssets.clear();
         for (const pid in this._pendingSaveRequests) {
             this._resolvePendingSave(pid, null);
         }
@@ -524,6 +575,7 @@ class GameSession {
         try { if (this.game.clearAllTimers) this.game.clearAllTimers(); } catch (e) {}
         this.players = {};
         this.spectators = {};
+        this.playerCursors.clear();
         this.playerInfoMap = {};
         this.clientInfoMap = {};
         this.playerSettingsMap = {};

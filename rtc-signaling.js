@@ -1,5 +1,5 @@
-// The browser owns the game. This service owns room discovery, SDP/ICE relay
-// and host leases; it never executes game code or receives game frames.
+// The browser owns the game. This service owns SDP/ICE relay and host leases.
+// Catalog discovery is available only to explicitly configured legacy hosts.
 const crypto = require('crypto');
 const WebSocket = require('ws');
 const { isIP } = require('net');
@@ -24,7 +24,7 @@ const iceFromEnv = (env = process.env) => {
 
 const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
     maxRooms = 1000, maxConnections = 4096, heartbeatMs = 15000, trustLoopbackProxy = false,
-    resolveGame = null, onRoomCreated = null, leaseMs = 90000, now = Date.now } = {}) => {
+    resolveGame = null, onRoomCreated = null, leaseMs = 90000, now = Date.now, allowOtherUpgrades = false } = {}) => {
     const rooms = new Map();
     const wss = new WebSocket.Server({ noServer: true, maxPayload: 64 * 1024 });
     const send = (ws, data) => {
@@ -34,12 +34,13 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
     };
     const fail = (ws, message) => { send(ws, { type: 'error', message }); ws.close(1008); };
     const live = room => room.host.readyState === WebSocket.OPEN
-        && (!room.game || now() - room.updatedAt < leaseMs);
+        && now() - room.updatedAt < leaseMs;
     const full = room => Math.max(room.playerCount, room.peers.size + 1) >= room.maxPlayers;
     const publicRoom = room => ({ roomId: room.id, ...room.game,
         playerCount: room.playerCount, maxPlayers: room.maxPlayers,
         createdAt: room.createdAt, joinable: !full(room) });
     const handleRequest = (req, res) => {
+        if (!resolveGame) return false;
         const url = new URL(req.url, 'http://localhost');
         if (url.pathname !== '/rooms' && !/^\/rooms\/[^/]+$/.test(url.pathname)) return false;
         const respond = (status, body) => {
@@ -68,7 +69,7 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
         return true;
     };
     const upgrade = (req, socket, head) => {
-        if (req.url !== path) { socket.destroy(); return; }
+        if (req.url !== path) { if (!allowOtherUpgrades) socket.destroy(); return; }
         if (wss.clients.size >= maxConnections) { socket.destroy(); return; }
         wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
     };
@@ -92,7 +93,15 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
             if (++count > 100) return fail(ws, 'Too many signaling messages');
             let msg;
             try { msg = JSON.parse(raw); } catch (_) { return fail(ws, 'Invalid signaling message'); }
-            if (!msg || typeof msg !== 'object') return fail(ws, 'Invalid signaling message');
+            if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return fail(ws, 'Invalid signaling message');
+            const fields = {
+                create: ['type', 'visibility', 'game', 'maxPlayers'], join: ['type', 'roomId', 'invite'],
+                heartbeat: ['type', 'playerCount'], visibility: ['type', 'visibility'],
+                remove: ['type', 'peerId'], signal: ['type', 'peerId', 'description', 'candidate'],
+            };
+            if (!Object.hasOwn(fields, msg.type) || Object.keys(msg).some(key => !fields[msg.type].includes(key))) {
+                return fail(ws, 'Only connection signaling fields are accepted');
+            }
             if (!ws.room) {
                 if (ws.registering) return fail(ws, 'Room registration is still in progress');
                 if (msg.type === 'create') {
@@ -160,10 +169,19 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
             if (msg.type !== 'signal') return fail(ws, 'Only connection signaling is accepted');
             const description = msg.description;
             const candidate = msg.candidate;
-            if (description && (!['offer', 'answer'].includes(description.type) || typeof description.sdp !== 'string')) {
+            const objectWithKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
+                && Object.keys(value).every(key => keys.includes(key));
+            if (description != null && candidate != null) return fail(ws, 'Send one connection signal at a time');
+            if (description != null && (!objectWithKeys(description, ['type', 'sdp'])
+                || !['offer', 'answer'].includes(description.type) || typeof description.sdp !== 'string'
+                || !description.sdp.length || Buffer.byteLength(description.sdp) > 48 * 1024)) {
                 return fail(ws, 'Invalid session description');
             }
-            if (!description && (!candidate || typeof candidate.candidate !== 'string')) {
+            if (!description && (!objectWithKeys(candidate, ['candidate', 'sdpMid', 'sdpMLineIndex', 'usernameFragment'])
+                || typeof candidate.candidate !== 'string' || Buffer.byteLength(candidate.candidate) > 4096
+                || (candidate.sdpMid != null && (typeof candidate.sdpMid !== 'string' || candidate.sdpMid.length > 256))
+                || (candidate.sdpMLineIndex != null && (!Number.isInteger(candidate.sdpMLineIndex) || candidate.sdpMLineIndex < 0 || candidate.sdpMLineIndex > 65535))
+                || (candidate.usernameFragment != null && (typeof candidate.usernameFragment !== 'string' || candidate.usernameFragment.length > 256)))) {
                 return fail(ws, 'Invalid ICE candidate');
             }
             const target = ws === room.host ? room.peers.get(msg.peerId) : room.host;

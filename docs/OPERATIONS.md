@@ -1,121 +1,77 @@
-# Homegames — Operations / Runbook
+> Website build update, October 12: `homegamesio` now generates the complete static site from `site.config.json` or explicit game paths. See its [README](../../homegamesio/README.md) for current build, preview and deployment commands. Older catalog/backend procedures below apply only to retained services.
 
-How to deploy, restart, observe, and recover. `> TODO: confirm` marks gaps to fill
-in with current practice.
+# Homegames — Operations
 
----
+Code-based build and recovery notes, reviewed October 11, 2026. This repository does not establish current production host/unit names or backup automation. Use the deployment's actual service definitions for restarts and logs.
 
-## The host
+## Build the website/runtime
 
-The EC2 backend runs its services under **systemd**. Manage with `systemctl`,
-read logs with `journalctl`.
+Install sibling dependencies from their manifests. Common currently also links the local `squish` package for 146; browser authoring supports 142/143/145. From each repository directory:
 
-```bash
-# status / restart / logs (service names: > TODO confirm exact unit names)
-systemctl status  homegames-core api homegames-worker
-systemctl restart api
-journalctl -u api -f                # follow API logs
-journalctl -u homegames-core -f
-journalctl -u homegames-worker -f
+```sh
+# homegames-client
+npm install
+npm run build
+# homegamesio
+npm install
+npm run build
+PORT=8187 node app.js
 ```
 
-Services (one host today): **api**, **homegames-core**, **the API worker**, plus
-**mongod**, **rabbitmq-server**, **forgejo**, and **docker**.
-`> TODO: confirm` the exact systemd unit names and whether Mongo/Rabbit/Forgejo are
-distro packages or also custom units.
+The client build produces `homegames-client/dist/homegames-client.js`; website webpack produces `homegamesio/web/bundle.js`. The Node website server reads scripts/HTML directly and serves the client-package bundle. Rebuild the client after common runtime changes; rebuild the website bundle after changing `client.js`. Restart `app.js` after routing changes.
 
----
+Local website previews still use production API URLs in retained catalog/account entry points. Studio project editing uses local storage/static templates; RTC defaults still point to Homegames signaling. Use the same browser origin/port to see the same IndexedDB library.
 
-## Deploying / updating
+## Stage a full website release
 
-### API, homegames-core, API worker (on the EC2 host)
-Current practice (`> TODO: confirm` precise steps):
-```bash
-cd <repo> && git pull
-npm install            # if deps changed
-systemctl restart <service>
-journalctl -u <service> -n 100 --no-pager   # verify it came up
+After building both bundles, run from `homegamesio`:
+
+```sh
+node scripts/prepare-rtc-site.js /tmp/homegames-site-review
 ```
-- After changing **homegames-common**, dependents that pin it via `file:` link
-  pick it up on `npm install`; restart them.
-- After changing the **Docker runner** (`homegames-core/docker/`), rebuild the
-  `homegames-runner` image (the session manager can build it on boot if
-  `dockerImageDir` is set; otherwise rebuild manually).
 
-### Website (homegames.io — S3/CloudFront)
-- `homegamesio/deploy.sh` currently does:
-  `aws s3 cp bundle.js s3://homegames.io/bundle.js` + a CloudFront invalidation.
-- `> TODO: CONFIRM (important)`: that script only pushes `bundle.js`, but the site
-  also serves `index.html`, `studio.html`/`studio.js`, `admin.html`/`admin.js`,
-  `reset-password.*`, `catalog.html`, etc., and `/authoring-guide.md`. **How do
-  those reach production?** Either CloudFront's origin is the EC2 `app.js`
-  (so HTML routes are dynamic), or all files must be `aws s3 sync`'d and the
-  routing is S3/CloudFront behaviors. **This must be nailed down** — recent
-  studio/admin/reset/authoring-guide changes only go live once this path is
-  correct. (If S3-static, `deploy.sh` needs to sync those files too; if the EC2
-  is the origin, `app.js` routes are what matter and `deploy.sh` is incomplete.)
+This rebuilds the portable template catalog from `templates/`, stages ZIPs and selected site files, and pins player/Studio HTML to a content-hashed client. It does not deploy. Inspect the staged contents before uploading.
 
-### LLM worker (Mac Studio)
-- Pull `worker/`, `npm install`, ensure the Python venv (`worker/llm/env`) +
-  model are present, run `worker/index.js` (it spawns the MLX model server).
-  `> TODO: confirm` how it's kept running (launchd? a `run.sh` in tmux? manual?)
-  and how it's updated.
-- It needs `homegames-common` installed (`npm install`) so it can resolve the
-  authoring-guide path it feeds the model.
+The staging file list includes the three HTML guides, but currently **omits `/authoring-guide.md`**, `view.html`, `dev.html`, policy/reset pages and some other ancillary routes. For static hosting, separately copy the current common `docs/homegames-context.md` to the served authoring-guide path and include any pages required by that deployment's links/routing. The Node origin reads the common file directly. Editing common alone does not refresh a static copy or an already-running model process.
 
-### Publishing a new squish version
-1. Bump + `npm publish` `squishjs`. 2. Add the alias (`squish-<v>`) to **every**
-consumer's `package.json` and to `homegames-common/game-loader.js → squishMap`.
-3. `npm install` + restart consumers; rebuild the client bundle + the runner image.
+`DISTRIBUTION_ID=… bash deploy.sh` builds and uploads only `web/bundle.js`, then invalidates `/bundle.js`. It does not publish HTML, Studio, templates, the client runtime or docs. Do not use it as a full-site release command. API-generated catalog HTML downloads also need the matching runtime via `CLIENT_BUNDLE_PATH`.
 
----
+Server bundles are built/published by `homegames/build-bundle.js` and its publisher, independently from the website. `downloads.js` reads `/builds/manifest.json`. For local download checks, set `HOMEGAMES_BUILDS_DIR` to a staged build directory when starting `app.js`.
 
-## Bootstrapping / common tasks
+## Shared runtime / Node updates
 
-- **Make someone an admin:** set `isAdmin: true` on their `users` doc directly in
-  Mongo (there is intentionally no self-serve admin grant):
-  `db.users.updateOne({ displayName: "X" }, { $set: { isAdmin: true } })`.
-- **Wipe/reset:** the user model changed (internal id + email); a fresh start
-  means clearing `users` (and dependent collections).
-- **SES out of sandbox:** required before verification/reset emails can go to
-  arbitrary addresses; set `SES_FROM_ADDRESS`/`SES_REGION`.
+- Check installed local dependency links/copies; a `file:` declaration does not update a running process or an embedded browser bundle by itself.
+- Node's canonical Squish aliases live in common; browser static requires live in `homegames-client/src/squish-map.js`. Add compatible browser entries deliberately and rebuild. A new Node version is not automatically available in browsers.
+- Rebuild `homegames-core/docker` with its `build-image.sh` after changing code/dependencies included in the runner. Existing containers and downloaded HTML retain older code until replaced/re-exported.
+- Node sessions require Docker or explicit fork permission. A failed Docker readiness check can remain cached until Core restarts.
+- Worker changes require restarting the appropriate service: `api/worker.js` is publish validation; `worker/index.js` is certificate/docs/legacy AI work.
 
----
+## Backups and recovery
 
-## Backups & disaster recovery
+| State | Backup/recovery |
+| --- | --- |
+| Studio drafts/media | Export project ZIPs. Browser data is origin/profile-specific; persistent-storage permission is best-effort. |
+| Studio snapshots | Stored only in that browser's library; export desired snapshots individually. Export does not include full history. |
+| Portable progress | Download save JSON; Load save checks game/schema compatibility. Source restore does not restore progress. |
+| Cross-tab conflict | Keep unsaved edits as a copy or reload the saved version. A stale write/restore must not be forced over another tab. |
+| Home server | Back up application data (config, certs, `.save-data`, asset cache, downloaded games) and custom game directories. `HG_APP_DATA_DIR` may relocate this state. |
+| Retained backend | Back up MongoDB records/binaries, Forgejo source and necessary service configuration/credentials. Account UI removal does not make these disposable. |
 
-`> TODO: CONFIRM` — define and verify these, they're the bus-factor core:
-- **MongoDB** — is there a scheduled `mongodump` / snapshot? Where to?
-- **Forgejo** — game source lives here; is the Forgejo data dir / repos backed up
-  (or the EBS volume snapshotted)?
-- **Assets** — binaries are in Mongo `documents`, so covered by the Mongo backup
-  (confirm).
-- **Secrets** — where is the canonical copy of `JWT_SECRET`,
-  `FORGEJO_USER_SECRET`, etc. so the host can be rebuilt? (Losing
-  `FORGEJO_USER_SECRET` orphans every user's git credentials.)
-- **EBS snapshots** of the single host would capture Mongo + Forgejo + configs in
-  one shot — `> TODO` confirm a snapshot schedule exists.
+Code does not prove a production backup schedule exists. Verify restores for the deployment you operate. Fresh ZIP installations and new HTML exports get independent progress slots; transfer progress explicitly instead of assuming source-copying transfers it.
 
----
+## Troubleshooting
 
-## Failure playbook
+| Symptom | Check |
+| --- | --- |
+| Studio game missing | Same origin/browser/profile? Was data cleared/evicted? Import a saved ZIP; there is no account cloud sync. |
+| Not saved / quota error | Keep the tab open, preserve a copy and free space. Check both project and progress status. |
+| ZIP/HTML export fails | Manifest/runtime agreement, literal metadata, relative imports, actual media bytes and format limits. Draft persistence does not imply portable validation success. |
+| Share fails / room missing | Host alive, signaling WebSocket reachable, `RTC_ENABLED`, player build compatibility, ICE/TURN and visibility. Portable rooms are private/unlisted. |
+| Catalog Play fails | Published local manifest/source/assets and browser runtime; do not start by assuming Docker is down. |
+| Node-hosted session fails | Docker image/readiness or explicit fork opt-in, session logs and configured child-port access. |
+| Docs question unavailable | API feature admission and background model/queue/delivery state. Studio AI is disabled separately. |
+| Legacy publish stuck | `api/worker.js`, RabbitMQ, reference license file and Docker validator. This is not part of portable export. |
+| Certificate pending | API/worker/DNS/certificate-authority path; use local HTTP while appropriate and restart to activate initial TLS. |
+| Updated guide still old | Static staging/upload includes the guide; caches/origin and installed common copy match. `deploy.sh` updates only catalog JavaScript. |
 
-| Symptom | Likely cause / check |
-|---------|----------------------|
-| Games won't start / blank | homegames-core or Docker down (`systemctl status docker homegames-core`). **Note:** the session manager falls back to in-process `fork()` if Docker is unavailable — for the public host this is a security risk; prefer fail-closed (see security_notes.md). |
-| Publishes stuck in PENDING | API worker down, or RabbitMQ down (`systemctl status homegames-worker rabbitmq-server`); check `journalctl -u homegames-worker`. |
-| "AI edit" never completes | Mac Studio worker offline or can't reach RabbitMQ. Safe to ignore short-term. |
-| Verification / reset emails not arriving | SES in sandbox, `SES_FROM_ADDRESS` unset, or DKIM/SPF missing. With SES unset, the API logs the code instead of sending. |
-| Site changes not live | the homegames.io deploy path (see TODO above) — invalidate CloudFront / sync S3. |
-| Forgejo errors on publish/clone | Forgejo down or the hardcoded `FORGEJO_URL` IP changed (`api/config.js`). |
-| Login broken for everyone | `JWT_SECRET` changed/lost. |
-
----
-
-## Security posture (pointer)
-
-The publish pipeline runs untrusted code; containment is the real boundary. Before
-scaling or hardening, read **`homegames-core/../security_notes.md`** (Docker
-fail-closed, IMDS/credential exposure from session containers, network egress,
-least-privilege IAM, validation-vs-runtime parity). The single-host design means a
-container escape reaches everything — weigh that as usage grows.
+For docs-only changes, check diffs, local links, HTML structure/IDs and inline script syntax. Exercise changed complete code examples against their declared runtime. Do not report historical runtime tests as checks run during a documentation review.

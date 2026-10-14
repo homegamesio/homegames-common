@@ -328,6 +328,9 @@ class GameSessionManager {
         // host is https, so container->host calls must use https too. When the
         // host is plain http (local dev), it must be false.
         extraEnv.HTTPS_ENABLED = this.certPath ? 'true' : 'false';
+        if (process.env.HG_OFFLINE === 'true') Object.assign(extraEnv, {
+            HG_OFFLINE: 'true', PUBLIC_GAMES: 'false', ERROR_REPORTING: 'false', LINK_ENABLED: 'false',
+        });
         // The runner image bakes no config.json, so without this the container
         // falls back to DEFAULT_CONFIG's HOMENAMES_PORT — which only happens to
         // match the host in local dev. Pass the host's real port so player-name
@@ -455,7 +458,8 @@ class GameSessionManager {
             throw new Error('startSession requires one of: code, gamePath, or versionId');
         }
 
-        const squishPkg = squishMap[squishVersion] || squishMap[DEFAULT_SQUISH_VERSION];
+        const squishPkg = squishMap[squishVersion || DEFAULT_SQUISH_VERSION];
+        if (!squishPkg) { if (cleanupFn) await cleanupFn(); throw new Error(`Unsupported Squish version: ${squishVersion}`); }
 
         return new Promise((resolve, reject) => {
             // Allowlist environment variables for child processes.
@@ -463,8 +467,13 @@ class GameSessionManager {
             // (e.g. FORGEJO_ADMIN_TOKEN, auth tokens, etc.)
             const ALLOWED_ENV_KEYS = [
                 'PATH', 'HOME', 'USER', 'LANG', 'TERM',
+                // Windows and isolated installs need the same state/temp
+                // roots as the parent; Squish resolves its asset cache here.
+                'APPDATA', 'LOCALAPPDATA', 'SYSTEMROOT', 'SystemRoot', 'WINDIR',
+                'TMPDIR', 'TMP', 'TEMP', 'HG_APP_DATA_DIR',
                 'NODE_ENV', 'NODE_PATH',
                 'SQUISH_PATH', 'API_URL', 'LOGGER_LOCATION',
+                'HG_OFFLINE', 'PUBLIC_GAMES', 'ERROR_REPORTING', 'LINK_ENABLED', 'RTC_SHARE_ORIGIN',
                 'HTTPS_ENABLED', 'HOMENAMES_PORT', 'BEZEL_SIZE_X', 'BEZEL_SIZE_Y',
                 'DOCKER_HOST_HOSTNAME', 'GRACE_PERIOD_MS',
             ];
