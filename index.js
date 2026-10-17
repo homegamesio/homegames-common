@@ -4,7 +4,6 @@ const readline = require('readline');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
-const unzipper = require('unzipper');
 const crypto = require('crypto');
 const { Readable } = require('stream');
 const os = require('os');
@@ -153,17 +152,17 @@ const getConfigValue = (key, _default = undefined) => {
     if (envValue !== undefined) {
         if (envValue === 'true') envValue = true;
         else if (envValue === 'false') envValue = false;
-        log.info(`Using environment value: ${envValue} for key: ${key}`);
+        log.info(`Using environment setting: ${key}`);
         return envValue;
     }
 
     if (config[key] === undefined && _default === undefined) {
         throw new Error(`No value for ${key} found in config`);
     } else if (config[key] === undefined && _default !== undefined) {
-        log.info(`Using default value (${_default}) for ${key}`);
+        log.info(`Using default setting: ${key}`);
         return DEFAULT_CONFIG[key] || _default;
     }
-    log.info(`Found value ${config[key]} for ${key} in config`);
+    log.info(`Using config setting: ${key}`);
     return config[key];
 };
 

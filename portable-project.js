@@ -4,6 +4,7 @@
 // its JavaScript. Execution is a separate, explicitly trusted operation.
 const { zipSync, unzipSync } = require('fflate');
 const acorn = require('acorn');
+const { walk, literal, readSourceMetadata, rewriteMetadata, normalizeMetadata, validateGameId } = require('./game-metadata');
 const { describeAsset } = require('./portable-media');
 const { packAssetBundle } = require('./local-play-shared');
 
@@ -72,51 +73,6 @@ async function sha256(data, options) {
     return Array.from(digest, n => n.toString(16).padStart(2, '0')).join('');
 }
 
-function walk(node, visit) {
-    if (!node || typeof node.type !== 'string') return;
-    visit(node);
-    for (const value of Object.values(node)) {
-        if (Array.isArray(value)) value.forEach(child => walk(child, visit));
-        else if (value && typeof value.type === 'string') walk(value, visit);
-    }
-}
-
-function literal(node, label, bindings = new Map(), seen = new Set()) {
-    if (!node) fail(`${label} must be declared as a literal`);
-    if (seen.has(node) || seen.size > 64) fail(`Circular or excessive constant expression in ${label}`);
-    seen = new Set(seen).add(node);
-    const read = value => literal(value, label, bindings, seen);
-    const resolve = (value, visited = new Set()) => {
-        if (!value || visited.has(value) || visited.size > 64) fail(`Unresolved constant in ${label}`);
-        visited.add(value);
-        if (value.type === 'Identifier' && bindings.has(value.name)) return resolve(bindings.get(value.name), visited);
-        if (value.type === 'MemberExpression') {
-            const object = resolve(value.object, visited), key = value.computed ? read(value.property) : value.property.name;
-            if (object.type === 'ObjectExpression') return resolve(object.properties.find(p => p.type === 'Property' && !p.computed && (p.key.name ?? p.key.value) === key)?.value, visited);
-        }
-        return value;
-    };
-    const resolved = resolve(node);
-    if (resolved !== node) return read(resolved);
-    if (node.type === 'Literal' && !(node.value instanceof RegExp)) return node.value;
-    if (node.type === 'UnaryExpression' && ['-', '+', '!'].includes(node.operator)) {
-        const value = read(node.argument);
-        return node.operator === '!' ? !value : node.operator === '-' ? -value : +value;
-    }
-    if (node.type === 'ArrayExpression') return node.elements.map(read);
-    if (node.type === 'ObjectExpression') {
-        const out = Object.create(null);
-        for (const p of node.properties) {
-            if (p.type !== 'Property' || p.computed || p.method || p.kind !== 'init') fail(`${label} must use literal properties`);
-            const key = p.key.name ?? p.key.value;
-            if (own(out, key)) fail(`Duplicate ${label} property: ${key}`);
-            out[key] = read(p.value);
-        }
-        return out;
-    }
-    fail(`${label} must be declared as a literal`);
-}
-
 function resolveModule(files, from, request) {
     if (typeof request !== 'string' || !/^\.\.?\//.test(request)) fail(`Unsupported module in ${from}: ${request}`);
     const parts = from.split('/').slice(0, -1);
@@ -142,53 +98,43 @@ function inspectSource(files, manifest) {
         try { trees[path] = acorn.parse(text(data), { ecmaVersion: 'latest', sourceType: 'script' }); }
         catch (error) { fail(`Cannot parse ${path}: ${error.message}`); }
     }
-    const metadataMethods = [];
-    walk(trees[manifest.entry], node => {
-        if (node.type === 'MethodDefinition' && node.static && !node.computed
-            && (node.key.name ?? node.key.value) === 'metadata') metadataMethods.push(node);
-    });
-    const body = metadataMethods[0]?.value.body.body;
-    if (metadataMethods.length !== 1 || body.length !== 1 || body[0].type !== 'ReturnStatement'
-        || body[0].argument?.type !== 'ObjectExpression') fail('Portable games need one static metadata() returning a literal object');
-    const metadata = Object.create(null), assets = [], assetNodes = new Set();
-    const bindings = new Map();
-    for (const statement of trees[manifest.entry].body) if (statement.type === 'VariableDeclaration' && statement.kind === 'const') {
-        for (const declaration of statement.declarations) if (declaration.id.type === 'Identifier') bindings.set(declaration.id.name, declaration.init);
-    }
-    for (const prop of body[0].argument.properties) {
-        if (prop.type !== 'Property' || prop.computed || prop.method || prop.kind !== 'init') fail('Portable metadata must use literal properties');
-        const key = prop.key.name ?? prop.key.value;
-        if (own(metadata, key)) fail(`Duplicate metadata property: ${key}`);
-        if (key !== 'assets') { metadata[key] = literal(prop.value, `metadata.${key}`, bindings); continue; }
-        if (prop.value.type !== 'ObjectExpression') fail('metadata.assets must be a literal object');
-        metadata.assets = Object.create(null);
-        for (const p of prop.value.properties) {
-            if (p.type !== 'Property' || p.computed || p.method || p.kind !== 'init') fail('Asset declarations must use literal keys');
-            const assetKey = p.key.name ?? p.key.value;
-            if (!/^[A-Za-z0-9_-]{1,32}$/.test(assetKey) || ['__proto__', 'constructor', 'prototype'].includes(assetKey)) fail(`Invalid asset key: ${assetKey}`);
-            if (own(metadata.assets, assetKey)) fail(`Duplicate asset key: ${assetKey}`);
-            const node = p.value;
-            if (node.type !== 'NewExpression' || node.callee.name !== 'Asset' || node.arguments.length !== 1) fail(`Asset ${assetKey} must use new Asset({ path, type })`);
-            const info = literal(node.arguments[0], `Asset ${assetKey}`);
-            if (info.id !== undefined) fail(`Asset ${assetKey} still uses a hosted asset ID; convert it to a project path`);
-            const path = normalizePath(info.path);
-            if (!own(files, path)) fail(`Missing asset "${assetKey}": ${path}`);
-            const media = describeAsset(files[path], path);
-            // Retained before authored video bundles used the existing video transport/renderer.
-            // if (!['image', 'audio'].includes(info.type) || media.kind !== info.type) fail(`Unsupported or invalid ${info.type} asset "${assetKey}": ${path}. Version 1 supports raster images and audio`);
-            if (!['image', 'audio', 'video', 'font'].includes(info.type) || media.kind !== info.type) fail(`Unsupported or invalid ${info.type} asset "${assetKey}": ${path}`);
-            metadata.assets[assetKey] = info;
-            assets.push({ key: assetKey, path, type: info.type });
-            assetNodes.add(node);
+    const inspected = readSourceMetadata(text(files[manifest.entry]), { requireExport: manifest.formatVersion === 2 });
+    const raw = inspected.metadata, assets = [], assetNodes = new Set();
+    const versions = new Set();
+    for (const tree of Object.values(trees)) walk(tree, node => {
+        if (node.type === 'CallExpression' && node.callee.name === 'require') {
+            const request = literal(node.arguments[0], 'require()');
+            if (typeof request === 'string' && /^squish-[0-9]+$/.test(request)) versions.add(request.slice(7));
         }
+    });
+    if (versions.size > 1 || (manifest.formatVersion === 2 && versions.size !== 1)) fail('Project needs exactly one supported Squish runtime import');
+    const runtime = [...versions][0] || manifest.runtime?.squishVersion;
+    if (manifest.formatVersion === 1) {
+        if (raw.squishVersion !== manifest.runtime.squishVersion) fail('metadata.squishVersion must match homegame.json');
+        if (runtime !== manifest.runtime.squishVersion) fail('Runtime mismatch with homegame.json');
+        if (raw.gameId !== undefined && raw.gameId !== manifest.gameId) fail('metadata.gameId must match homegame.json');
+        if (raw.saveSchemaVersion !== undefined && raw.saveSchemaVersion !== manifest.saveSchemaVersion) fail('metadata.saveSchemaVersion must match homegame.json');
+    } else {
+        manifest.gameId = raw.gameId;
+        manifest.saveSchemaVersion = raw.saveSchemaVersion ?? 1;
+        manifest.runtime = { squishVersion: runtime };
     }
-    if (metadata.squishVersion !== manifest.runtime.squishVersion) fail('metadata.squishVersion must match homegame.json');
-    if (metadata.services && (!Array.isArray(metadata.services) || metadata.services.some(s => s !== 'multiplayer'))) fail('This portable runtime supports only the multiplayer service');
+    const metadata = normalizeMetadata(raw, { runtime, legacy: manifest.formatVersion === 1 });
+    for (const { key: assetKey, info, node } of inspected.assets) {
+        if (info.id !== undefined) fail(`Asset ${assetKey} still uses a hosted asset ID; convert it to a project path`);
+        const path = normalizePath(info.path);
+        if (!own(files, path)) fail(`Missing asset "${assetKey}": ${path}`);
+        const media = describeAsset(files[path], path);
+        if (!['image', 'audio', 'video', 'font'].includes(info.type) || media.kind !== info.type) fail(`Unsupported or invalid ${info.type} asset "${assetKey}": ${path}`);
+        assets.push({ key: assetKey, path, type: info.type });
+        // The entry is parsed once here and once with its sibling modules.
+        assetNodes.add(node.start);
+    }
     for (const [path, tree] of Object.entries(trees)) walk(tree, node => {
         // Generated/uploaded media uses the standard Asset(info, bytes) and
         // getAssets()/addAsset contract. The runtime validates those bytes;
         // byte-less assets must still be declared project files.
-        if (node.type === 'NewExpression' && node.callee.name === 'Asset' && !assetNodes.has(node)
+        if (node.type === 'NewExpression' && node.callee.name === 'Asset' && !(path === manifest.entry && assetNodes.has(node.start))
             && node.arguments.length !== 2) fail(`Declare portable assets in the entry metadata.assets or supply bytes: ${path}`);
         if (node.type === 'CallExpression' && node.callee.name === 'require') {
             const request = literal(node.arguments[0], `require() in ${path}`);
@@ -220,17 +166,16 @@ async function createProject(input, options = {}) {
         if (!Number.isSafeInteger(length) || length > LIMITS.fileBytes || (total += length) > LIMITS.totalBytes) fail(`Project size limit exceeded at ${name}`);
         files[name] = bytes(value);
     }
-    if (!own(files, MANIFEST)) fail('Missing homegame.json');
     const exports = Object.fromEntries(Object.entries(files).filter(([name]) => name.startsWith('user-exports/')).map(([name, data]) => [name.slice(13), data]));
     require('./user-exports').validateFiles(exports);
-    const manifest = json(files[MANIFEST], MANIFEST);
-    if (manifest?.formatVersion !== 1) fail(`Unsupported project format: ${manifest?.formatVersion}`);
-    if (typeof manifest.gameId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(manifest.gameId)) fail('homegame.json needs a UUID gameId');
+    const manifest = own(files, MANIFEST) ? json(files[MANIFEST], MANIFEST) : { formatVersion: 2, entry: 'index.js' };
+    if (own(files, MANIFEST) && manifest?.formatVersion !== 1) fail(`Unsupported project format: ${manifest?.formatVersion}`);
+    if (normalizePath(manifest.entry) !== manifest.entry || manifest.entry.startsWith('user-exports/') || !manifest.entry.endsWith('.js') || !own(files, manifest.entry)) fail(`Missing or invalid entry: ${manifest.entry}`);
+    const { metadata, assets } = inspectSource(files, manifest);
+    validateGameId(manifest.gameId);
     if (!Number.isSafeInteger(manifest.saveSchemaVersion) || manifest.saveSchemaVersion < 1) fail('Invalid saveSchemaVersion');
     const version = manifest.runtime?.squishVersion;
     if (!Array.isArray(options.supportedRuntimes) || !options.supportedRuntimes.includes(version)) fail(`Unsupported runtime: squish-${version}. Supported: ${(options.supportedRuntimes || []).join(', ')}`);
-    if (normalizePath(manifest.entry) !== manifest.entry || manifest.entry.startsWith('user-exports/') || !manifest.entry.endsWith('.js') || !own(files, manifest.entry)) fail(`Missing or invalid entry: ${manifest.entry}`);
-    const { metadata, assets } = inspectSource(files, manifest);
     // Asset records travel in bounded batches. A single record must still fit
     // the RTC packet cap; the full game's assets need not fit one packet.
     if (assets.some(a => 44 + files[a.path].length > 10 * 1024 * 1024)) fail('An asset exceeds the current 10 MiB RTC packet limit');
@@ -256,7 +201,7 @@ async function exportArchive(project) {
 
 // Validate the central directory before allocating/decompressing. fflate
 // supplies ZIP compression; this guard enforces our narrower import policy.
-function checkArchive(data) {
+function checkArchive(data, allowDirectories = false) {
     if (!(data instanceof Uint8Array) || data.length > LIMITS.archiveBytes || data.length < 22) fail('Invalid or oversized project archive');
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     let end = data.length - 22;
@@ -275,11 +220,13 @@ function checkArchive(data) {
         const size = view.getUint32(cursor + 24, true), compressed = view.getUint32(cursor + 20, true);
         const nameLength = view.getUint16(cursor + 28, true), extra = view.getUint16(cursor + 30, true), comment = view.getUint16(cursor + 32, true);
         const offset = view.getUint32(cursor + 42, true), mode = view.getUint32(cursor + 38, true) >>> 16;
-        if (flags & 1 || ![0, 8].includes(method) || view.getUint16(cursor + 34, true) || (mode & 0xf000) === 0xa000) fail('Encrypted files, links and this ZIP compression are unsupported');
+        if (flags & 1 || ![0, 8].includes(method) || view.getUint16(cursor + 34, true) || ![0, 0x4000, 0x8000].includes(mode & 0xf000)) fail('Encrypted files, links and this ZIP compression are unsupported');
         if (size > LIMITS.fileBytes || (total += size) > LIMITS.totalBytes + LIMITS.fileBytes) fail('Expanded ZIP exceeds project size limits');
         if (cursor + 46 + nameLength + extra + comment > end || offset + 30 > start) fail('Damaged ZIP entry');
         const name = text(data.subarray(cursor + 46, cursor + 46 + nameLength));
-        names.push(name);
+        if (allowDirectories && name.endsWith('/')) {
+            if (normalizePath(name.slice(0, -1)) !== name.slice(0, -1) || size) fail('Invalid ZIP directory');
+        } else names.push(name);
         if (view.getUint32(offset, true) !== 0x04034b50 || view.getUint16(offset + 6, true) !== flags || view.getUint16(offset + 8, true) !== method) fail('ZIP headers disagree');
         const localNameLength = view.getUint16(offset + 26, true), localExtra = view.getUint16(offset + 28, true);
         const dataStart = offset + 30 + localNameLength + localExtra;
@@ -289,9 +236,26 @@ function checkArchive(data) {
     }
     if (cursor !== end) fail('Damaged ZIP directory length');
     validatePaths(names);
+    if (new Set(records.map(record => record.name.toLowerCase())).size !== records.length) fail('Duplicate ZIP entry');
+    for (const record of records.filter(record => record.name.endsWith('/'))) {
+        if (names.some(name => record.name.toLowerCase().startsWith(name.toLowerCase() + '/') || name.toLowerCase() === record.name.slice(0, -1).toLowerCase())) fail('File/directory collision');
+    }
     records.sort((a, b) => a.offset - b.offset);
     if (records.some((r, i) => i && r.offset < records[i - 1].end)) fail('Overlapping ZIP entries');
     return records;
+}
+
+// The legacy Forgejo importer shares the same bounds/path/link policy without
+// requiring a portable-project inventory. Directory entries are discarded.
+function readArchiveFiles(data) {
+    const records = checkArchive(data, true), unpacked = unzipSync(data), files = Object.create(null);
+    let total = 0;
+    for (const record of records) {
+        const data = unpacked[record.name];
+        if (data?.length !== record.size || (total += data.length) > LIMITS.totalBytes) fail('Expanded ZIP size mismatch');
+        if (!record.name.endsWith('/')) files[record.name] = data;
+    }
+    return files;
 }
 
 async function importArchive(data, options = {}) {
@@ -321,8 +285,14 @@ function checkSyntax(source) {
 // unrelated project file is unfinished. Never run game code to find an image.
 function thumbnailPath(files) {
     try {
-        const manifest = json(bytes(files[MANIFEST]), MANIFEST), entry = normalizePath(manifest.entry);
+        const legacy = own(files, MANIFEST);
+        const entry = legacy ? normalizePath(json(bytes(files[MANIFEST]), MANIFEST).entry) : 'index.js';
         const source = bytes(files[entry]);if(source.length > LIMITS.sourceBytes)return null;
+        if (!legacy) {
+            const { metadata } = readSourceMetadata(text(source), { requireExport: true, strictAssets: false });
+            const path = normalizePath(metadata.thumbnail);
+            return own(files, path) ? path : null;
+        }
         const tree = acorn.parse(text(source), { ecmaVersion: 'latest', sourceType: 'script' });
         const methods = [], bindings = new Map();
         walk(tree, node => { if(node.type === 'MethodDefinition' && node.static && !node.computed && (node.key.name ?? node.key.value) === 'metadata')methods.push(node); });
@@ -338,5 +308,24 @@ function thumbnailPath(files) {
     } catch (_) { return null; }
 }
 
+// Copying preserves identity; only an explicit new game/remix calls this helper.
+function withGameId(input, gameId) {
+    validateGameId(gameId);
+    const files = Object.fromEntries(Object.entries(input).map(([name, value]) => [name, bytes(value)]));
+    if (own(files, MANIFEST)) {
+        const manifest = json(files[MANIFEST], MANIFEST);
+        if (manifest.formatVersion !== 1) fail('Unsupported legacy project format');
+        manifest.gameId = gameId;
+        files[MANIFEST] = encoder.encode(JSON.stringify(manifest, null, 2) + '\n');
+        // A transitional v1 source may repeat the identity; keep it consistent.
+        const source = text(files[manifest.entry]);
+        if (readSourceMetadata(source).metadata.gameId !== undefined) files[manifest.entry] = encoder.encode(rewriteMetadata(source, { gameId }));
+    } else {
+        if (!own(files, 'index.js')) fail('Missing index.js');
+        files['index.js'] = encoder.encode(rewriteMetadata(text(files['index.js']), { gameId }, { requireExport: true }));
+    }
+    return files;
+}
+
 module.exports = { checkSyntax, thumbnailPath, MANIFEST, INVENTORY, LIMITS, normalizePath, resolveModule, canonical,
-    createProject, exportArchive, importArchive, assetBundle };
+    createProject, exportArchive, importArchive, readArchiveFiles, assetBundle, withGameId };

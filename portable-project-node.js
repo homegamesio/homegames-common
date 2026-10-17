@@ -7,7 +7,7 @@ const project = require('./portable-project');
 
 // Match the current browser build explicitly. Do not substitute runtime
 // versions, or promise an offline export with an unavailable runtime.
-const SUPPORTED_RUNTIMES = ['142', '143', '145', '146'];
+const SUPPORTED_RUNTIMES = ['150'];
 const options = { supportedRuntimes: SUPPORTED_RUNTIMES,
     sha256: data => crypto.createHash('sha256').update(data).digest('hex') };
 

@@ -15,139 +15,31 @@
  *   - buildLocalHtml: compose a self-contained offline-playable HTML file
  */
 
-const acorn = require('acorn');
+const { readSourceMetadata, normalizeMetadata } = require('./game-metadata');
 
-// ---------------------------------------------------------------------------
-// Static metadata extraction
-// ---------------------------------------------------------------------------
-
-const _walk = (node, visit) => {
-    if (!node || typeof node.type !== 'string') return;
-    visit(node);
-    for (const key of Object.keys(node)) {
-        const value = node[key];
-        if (Array.isArray(value)) {
-            for (const child of value) {
-                if (child && typeof child.type === 'string') _walk(child, visit);
-            }
-        } else if (value && typeof value.type === 'string') {
-            _walk(value, visit);
-        }
-    }
-};
-
-const _propName = (prop) => {
-    if (!prop.key) return null;
-    return prop.key.type === 'Identifier' ? prop.key.name : prop.key.value;
-};
-
-const _literal = (node) => (node && node.type === 'Literal') ? node.value : undefined;
-
-/**
- * Extracts { squishVersion, name, services, assets } from a game's entry
- * source by finding `static metadata()` and reading literal values out of its
- * returned object. Values that aren't static literals are simply omitted.
- * Core opts into project-relative paths; the hosted API still loads legacy
- * asset IDs from its database and retains that behavior by default.
- * Returns { error } if the source doesn't parse or has no metadata method.
- */
+// One static reader for catalog, Studio and portable projects. Legacy hosted
+// asset IDs remain supported here; portable packages validate their own media.
 const parseGameSourceMetadata = (source, { includePathAssets = false } = {}) => {
-    let ast;
     try {
-        ast = acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'script' });
-    } catch (e) {
-        try {
-            ast = acorn.parse(source, { ecmaVersion: 'latest', sourceType: 'module' });
-        } catch (e2) {
-            return { error: 'Source does not parse: ' + e2.message };
+        let inspected;
+        try { inspected = readSourceMetadata(source, { strictAssets: false, requireExport: true }); }
+        catch (exportError) {
+            inspected = readSourceMetadata(source, { strictAssets: false });
+            // Historical source-only fixtures/wrapped exports keep their reader.
+            // New metadata-only games use the same exported-class contract as ZIPs.
+            if (inspected.metadata.gameId && inspected.metadata.squishVersion === undefined) throw exportError;
         }
-    }
-
-    let metadataReturn = null;
-    _walk(ast, (node) => {
-        if (metadataReturn) return;
-        if (node.type === 'MethodDefinition' && node.static && node.key
-            && (node.key.name === 'metadata' || node.key.value === 'metadata')) {
-            _walk(node.value, (inner) => {
-                if (!metadataReturn && inner.type === 'ReturnStatement'
-                    && inner.argument && inner.argument.type === 'ObjectExpression') {
-                    metadataReturn = inner.argument;
-                }
-            });
+        const meta = normalizeMetadata(inspected.metadata, { runtime: inspected.runtime, legacy: !inspected.metadata.gameId || inspected.metadata.squishVersion !== undefined });
+        const assets = new Map();
+        for (const {key, info} of inspected.assets) {
+            if (includePathAssets && typeof info.path === 'string' && info.path.length) assets.set(key, {key, path: info.path, type: info.type || 'image'});
+            else if (info.id) assets.set(key, {key, id: info.id, type: info.type || 'image'});
         }
-    });
-
-    if (!metadataReturn) {
-        return { error: 'No static metadata() returning an object literal found' };
-    }
-
-    const meta = { squishVersion: null, name: null, services: [], assets: [], thumbnail: null, isTest: false };
-
-    for (const prop of metadataReturn.properties) {
-        const key = _propName(prop);
-        if (key === 'squishVersion') {
-            meta.squishVersion = _literal(prop.value) || null;
-        } else if (key === 'name') {
-            meta.name = _literal(prop.value) || null;
-        } else if (['author', 'createdBy', 'description'].includes(key)) {
-            meta[key] = _literal(prop.value) || null;
-        } else if (key === 'thumbnail') {
-            meta.thumbnail = _literal(prop.value) || null;
-        } else if (key === 'isTest') {
-            meta.isTest = _literal(prop.value) === true;
-        } else if (key === 'maxPlayers') {
-            const value = _literal(prop.value);
-            if (Number.isInteger(value) && value > 0) meta.maxPlayers = value;
-        } else if (key === 'services' && prop.value.type === 'ArrayExpression') {
-            meta.services = prop.value.elements.map(_literal).filter(Boolean);
-        } else if (key === 'assets' && prop.value.type === 'ObjectExpression') {
-            // Keyed map, not array: duplicate keys in the object literal must
-            // resolve last-wins, matching what the runtime object holds.
-            const assetsByKey = {};
-            for (const assetProp of prop.value.properties) {
-                const assetKey = _propName(assetProp);
-                const v = assetProp.value;
-                if (v && v.type === 'NewExpression' && v.arguments && v.arguments[0]
-                    && v.arguments[0].type === 'ObjectExpression') {
-                    const info = {};
-                    for (const infoProp of v.arguments[0].properties) {
-                        info[_propName(infoProp)] = _literal(infoProp.value);
-                    }
-                    if (assetKey && includePathAssets && typeof info.path === 'string' && info.path.length) {
-                        assetsByKey[assetKey] = { key: assetKey, path: info.path, type: info.type || 'image' };
-                    } else if (assetKey && info.id) {
-                        assetsByKey[assetKey] = { key: assetKey, id: info.id, type: info.type || 'image' };
-                    }
-                }
-            }
-            meta.assets = Object.values(assetsByKey);
-        }
-    }
-
-    return meta;
+        return { ...meta, assets: [...assets.values()], thumbnail: meta.thumbnail || null, isTest: meta.isTest === true };
+    } catch (error) { return { error: error.message }; }
 };
-
-/**
- * Whether a game is eligible to run client-side. Multiplayer games qualify —
- * they run in a browser host and can admit RTC guests. Games that cannot run (parse
- * failures, services with no local fallback) opt out.
- */
-const checkLocalPlayable = (meta) => {
-    if (meta.error) return { playable: false, reason: meta.error };
-    if (meta.services.includes('contentGenerator')) {
-        return { playable: false, reason: 'Game requires the contentGenerator service' };
-    }
-    return { playable: true };
-};
-
-// Downloads use the same runtime and RTC sharing as browser Play.
-const checkDownloadable = (meta) => {
-    if (meta.error) return { downloadable: false, reason: meta.error };
-    if (meta.services.includes('contentGenerator')) {
-        return { downloadable: false, reason: 'Game requires the contentGenerator service' };
-    }
-    return { downloadable: true };
-};
+const checkLocalPlayable = meta => meta.error ? { playable: false, reason: meta.error } : { playable: true };
+const checkDownloadable = meta => meta.error ? { downloadable: false, reason: meta.error } : { downloadable: true };
 
 // ---------------------------------------------------------------------------
 // Asset bundle packing — the single implementation lives in

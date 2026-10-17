@@ -43,8 +43,12 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
                         if (closed) throw new Error('This player has closed. Reopen the game to change your name.');
                         const name = options.profile.set(value); command('player-name', name); return name;
                     } : null);
-                    for (const [key, label] of [['share', 'Share'], ['copy-share', 'Share a copy'], ['manual-connect', 'Manual connection'], ['exports', 'View exports']]) {
-                        toolbar?.setAction(key, key !== 'exports' && !message.sharing ? null : { label, run: () => command(key) });
+                    for (const [key, label] of [['share', 'Invite'], ['copy-share', 'Share a copy'], ['manual-connect', 'Manual connection'], ['exports', 'View exports']]) {
+                        const soloInvite = key === 'share' && message.multiplayer === false;
+                        toolbar?.setAction(key, key !== 'exports' && !message.sharing ? null : {
+                            label: soloInvite ? 'Invite (solo)' : label, disabled: soloInvite,
+                            title: soloInvite ? 'This is a solo game. Use Share a copy to send it to a friend.' : '', run: () => command(key),
+                        });
                     }
                     toolbar?.setAction('download-html', { label: 'Download game HTML', id: options.htmlId, run: () => download('html') });
                     toolbar?.setAction('download-zip', { label: 'Download game ZIP', id: options.zipId, run: () => download('zip') });

@@ -1,4 +1,4 @@
-const { Squisher } = require('squish-146');
+const { Squisher } = require('squish-150');
 const collectGameAssets = ({ game, customBottomLayer, customTopLayer }) => Object.assign({},
     game.constructor.metadata?.()?.assets, customBottomLayer?.assets,
     customTopLayer?.assets, game.getAssets?.());

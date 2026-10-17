@@ -10,7 +10,7 @@ Reviewed against current code on October 11, 2026. Browser projects/progress and
 - Project files: JS source, authored media and supporting files with validated relative paths. Assets declare `new Asset({ path: './assets/hero.png', type: 'image' })`; media bytes are inside the project.
 - `.homegame/inventory.json`: generated `formatVersion`, `revision`, and per-file path/byteLength/mediaType/SHA-256 records. The revision hashes manifest and file inventory; it is not a catalog commit or a signature.
 
-The current format caps projects at 512 files, 16 MiB per file, 64 MiB total, 65 MiB archive input, and 1 MiB per JS file. Each authored asset record must fit 10 MiB; larger collections travel as several packets containing complete Squish records. Runtime support is supplied by the caller; the browser currently supports Squish 142/143/145/146.
+The current format caps projects at 512 files, 16 MiB per file, 64 MiB total, 65 MiB archive input, and 1 MiB per JS file. Each authored asset record must fit 10 MiB; larger collections travel as several packets containing complete Squish records. Runtime support is supplied by the caller; the browser currently supports Squish 1.5.0/143/145/146.
 
 `gameId` identifies the package across copies. A separate, trusted **installation ID** identifies a local copy's storage. Imports get a new installation; template copies also get a fresh game UUID. HTML exports embed a fresh installation ID. Copying the same HTML preserves that ID, but another browser/origin does not inherit its storage.
 

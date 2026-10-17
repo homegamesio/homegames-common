@@ -4,9 +4,12 @@
 // WebSocket or home-server dependencies in this module.
 const MAX_FILE_INPUT_BYTES = 8 * 1024 * 1024;
 const GameInput = require('./game-input');
+const visibleTo = (node, playerId) => !node.playerIds?.length || node.playerIds.some(id => id == playerId);
+const layersOf = layers => Object.values(layers || {}).filter(layer => layer?.root?.node);
 
 const decodeFileInput = (raw, useBuffer = false) => {
     if (typeof raw === 'string') {
+        if (raw.length > Math.ceil(MAX_FILE_INPUT_BYTES / 3) * 4) return null;
         let binary;
         if (!useBuffer && typeof atob === 'function') {
             binary = atob(raw);
@@ -22,6 +25,7 @@ const decodeFileInput = (raw, useBuffer = false) => {
     if (raw && typeof raw === 'object') {
         const bytes = Object.values(raw);
         if (bytes.length === 0 || bytes.length > MAX_FILE_INPUT_BYTES) return null;
+        if (bytes.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) return null;
         return useBuffer ? Buffer.from(bytes) : Uint8Array.from(bytes);
     }
     return null;
@@ -46,12 +50,14 @@ class GameDispatcher {
         this.findPointerNode = opts.findPointerNode || this.findNode;
         this.toGameCoords = opts.toGameCoords || ((x, y) => ({ x, y }));
         this.fileBuffers = !!opts.fileBuffers;
+        this.canControlGame = opts.canControlGame || (() => true);
     }
 
     handleInput(playerId, input) {
         if (!input || typeof input !== 'object' || typeof input.type !== 'string') return;
 
         const pid = Number(playerId);
+        if (!Number.isSafeInteger(pid) || pid <= 0) return;
 
         try {
             if (input.type === 'click') {
@@ -59,13 +65,13 @@ class GameDispatcher {
                 if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
                 this._handleClick(pid, data);
             } else if (input.type === 'keydown') {
-                if (typeof input.key !== 'string' || input.key.length > 20) return;
+                if (!this.canControlGame(pid) || typeof input.key !== 'string' || input.key.length > 20) return;
                 this.gameInput.keyDown(pid, input.key);
             } else if (input.type === 'keyup') {
-                if (typeof input.key !== 'string' || input.key.length > 20) return;
+                if (!this.canControlGame(pid) || typeof input.key !== 'string' || input.key.length > 20) return;
                 this.gameInput.keyUp(pid, input.key);
             } else if (input.type === 'mouseup') {
-                this.game.handleMouseUp && this.game.handleMouseUp(pid, input.data);
+                if (this.canControlGame(pid)) this.game.handleMouseUp?.(pid, input.data);
                 this.endPress(pid, input.data);
             } else if (input.type === 'mousemove') {
                 // Only sent while the pointer/finger is held down — drives
@@ -75,14 +81,14 @@ class GameDispatcher {
                 // Pointer Lock sends relative mouse motion without a held
                 // button. Keep it separate from absolute, scaled drag input.
                 const delta = input.data;
-                if (!delta || !Number.isFinite(delta.dx) || !Number.isFinite(delta.dy)
+                if (!this.canControlGame(pid) || !delta || !Number.isFinite(delta.dx) || !Number.isFinite(delta.dy)
                     || Math.abs(delta.dx) > 4096 || Math.abs(delta.dy) > 4096) return;
                 this.game.handlePointerMove?.(pid, { dx: delta.dx, dy: delta.dy });
             } else if (input.type === 'input') {
                 if (input.gamepad) {
-                    this.gameInput.gamepad(pid, input);
+                    if (this.canControlGame(pid)) this.gameInput.gamepad(pid, input);
                 } else {
-                    const node = this.findNode(input.nodeId);
+                    const node = this._findInputNode(input.nodeId, pid);
                     if (node && node.node && node.node.input) {
                         if (node.node.input.type === 'file') {
                             const fileBytes = decodeFileInput(input.input, this.fileBuffers);
@@ -93,10 +99,10 @@ class GameDispatcher {
                     }
                 }
             } else if (input.type === 'onhover') {
-                const node = this.findNode(input.nodeId);
+                const node = this._findInputNode(input.nodeId, pid);
                 if (node && node.node && node.node.onHover) node.node.onHover(pid);
             } else if (input.type === 'offhover') {
-                const node = this.findNode(input.nodeId);
+                const node = this._findInputNode(input.nodeId, pid);
                 if (node && node.node && node.node.offHover) node.node.offHover(pid);
             }
         } catch (e) {
@@ -104,10 +110,36 @@ class GameDispatcher {
         }
     }
 
+    // IDs identify a target, not permission to use it. Walk the current scene
+    // once, pruning private/noninteractive branches before lookup or decoding.
+    // Do not cache authorization: games can reparent nodes or change playerIds
+    // without notifying a renderer. Layers may be keyed or sparse collections.
+    _findInputNode(id, playerId) {
+        if (!Number.isSafeInteger(id) || id < 0) return null;
+        const seen = new Set();
+        const visit = (wrapper, depth) => {
+            const node = wrapper?.node;
+            if (!node || depth > 100 || seen.has(node) || !visibleTo(node, playerId)) return null;
+            seen.add(node);
+            if (node.id === id) return wrapper;
+            for (const child of Object.values(node.children || {})) {
+                const found = visit(child, depth + 1);
+                if (found) return found;
+            }
+            return null;
+        };
+        for (const layer of layersOf(this.getLayers(undefined, undefined, playerId))) {
+            if (layer.interactive === false) continue;
+            const found = visit(layer.root, 0);
+            if (found) return found;
+        }
+        return null;
+    }
+
     // --- Private: click / hit-testing ---
 
     _handleClick(playerId, click) {
-        if (!click || typeof click.x !== 'number' || typeof click.y !== 'number') return;
+        if (!click || !Number.isFinite(click.x) || !Number.isFinite(click.y)) return;
         if (click.x < 0 || click.y < 0 || click.x >= 100 || click.y >= 100) return;
 
         const existingPress = this._activePresses[playerId];
@@ -127,29 +159,30 @@ class GameDispatcher {
             this._handleDragMove(playerId, click);
         }
 
-        const clickedNode = this._findClick(click.x, click.y, playerId);
-        const realNode = clickedNode ? this.findPointerNode(clickedNode.id) : null;
+        const target = this._findClickTarget(click.x, click.y, playerId);
 
         if (isNewPress) {
             this._activePresses[playerId] = {
-                node: (realNode && realNode.node) || null,
+                node: target?.node || null,
+                path: target?.path,
                 x: click.x,
                 y: click.y,
             };
         }
 
-        if (realNode && realNode.node && realNode.node.handleClick) {
+        if (target?.node.handleClick) {
             const { x, y } = this.toGameCoords(click.x, click.y);
-            realNode.node.handleClick(playerId, x, y);
+            target.node.handleClick(playerId, x, y);
         }
     }
 
     // A held pointer moved (mousemove input, or a client's repeated click
     // while held). Updates the press position and fires the drag handlers.
     _handleDragMove(playerId, move) {
-        if (!move || typeof move.x !== 'number' || typeof move.y !== 'number') return;
+        if (!move || !Number.isFinite(move.x) || !Number.isFinite(move.y)) return;
         if (move.x < 0 || move.y < 0 || move.x >= 100 || move.y >= 100) return;
 
+        this.checkActivePresses(playerId);
         const press = this._activePresses[playerId];
         if (press) {
             press.x = move.x;
@@ -158,7 +191,7 @@ class GameDispatcher {
 
         const { x, y } = this.toGameCoords(move.x, move.y);
         try {
-            this.game.handleMouseMove && this.game.handleMouseMove(playerId, { x, y });
+            if (this.canControlGame(playerId)) this.game.handleMouseMove?.(playerId, { x, y });
         } catch (e) {
             console.error('[GameDispatcher] game.handleMouseMove threw:', e);
         }
@@ -181,7 +214,7 @@ class GameDispatcher {
         delete this._activePresses[playerId];
 
         if (press.node && typeof press.node.offClick === 'function') {
-            const hasCoords = release && typeof release.x === 'number' && typeof release.y === 'number';
+            const hasCoords = release && Number.isFinite(release.x) && Number.isFinite(release.y);
             const raw = hasCoords ? release : { x: press.x, y: press.y };
             try {
                 const { x, y } = this.toGameCoords(raw.x, raw.y);
@@ -192,7 +225,9 @@ class GameDispatcher {
         }
     }
 
-    // Close a press if game logic removed its target from the scene.
+    // Cancel once when a captured branch is removed or becomes private. The
+    // release callback belongs to a previously authorized press and lets games
+    // clear held controls. No further drag callbacks reach that target.
     checkActivePresses(playerId) {
         if (playerId === undefined) {
             for (const id of Object.keys(this._activePresses)) this.checkActivePresses(id);
@@ -200,12 +235,22 @@ class GameDispatcher {
         }
         const press = this._activePresses[playerId];
         if (!press || !press.node) return;
-        if (!this.findPointerNode(press.node.id)) this.endPress(playerId, null);
+        const path = press.path;
+        const attached = path && layersOf(this.getLayers(undefined, undefined, playerId))
+            .some(layer => layer.interactive !== false && layer.root.node === path[0]);
+        if (!attached || path.some((node, i) => !visibleTo(node, playerId)
+            || (i > 0 && !Object.values(path[i - 1].children || {}).some(child => child?.node === node)))) {
+            this.endPress(playerId, null);
+        }
     }
 
     _findClick(x, y, playerId) {
+        return this._findClickTarget(x, y, playerId)?.node || null;
+    }
+
+    _findClickTarget(x, y, playerId) {
         let clicked = null;
-        for (const layer of this.getLayers(x, y, playerId)) {
+        for (const layer of layersOf(this.getLayers(x, y, playerId))) {
             if (layer.interactive === false) continue;
             clicked = this._findClickHelper(x, y, playerId, layer.root.node, null,
                 layer.scale || { x: 1, y: 1 }, 0) || clicked;
@@ -213,13 +258,14 @@ class GameDispatcher {
         return clicked;
     }
 
-    _findClickHelper(x, y, playerId, node, clicked, scale, depth) {
+    _findClickHelper(x, y, playerId, node, clicked, scale, depth, path = []) {
         // Guard against deep/cyclic trees
         if (depth > 100) return clicked;
 
-        if (node.playerIds && node.playerIds.length > 0 && !node.playerIds.find(p => p == playerId)) {
+        if (!visibleTo(node, playerId)) {
             return clicked;
         }
+        path.push(node);
 
         if (node.coordinates2d && node.coordinates2d.length > 0) {
             const vertices = [];
@@ -253,7 +299,7 @@ class GameDispatcher {
                 }
 
                 if (isInside) {
-                    clicked = node;
+                    clicked = { node, path: path.slice() };
                 }
             }
         }
@@ -263,11 +309,12 @@ class GameDispatcher {
             for (let i = 0; i < childKeys.length; i++) {
                 const child = node.children[childKeys[i]];
                 if (child && child.node) {
-                    clicked = this._findClickHelper(x, y, playerId, child.node, clicked, scale, depth + 1);
+                    clicked = this._findClickHelper(x, y, playerId, child.node, clicked, scale, depth + 1, path);
                 }
             }
         }
 
+        path.pop();
         return clicked;
     }
 }

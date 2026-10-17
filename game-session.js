@@ -93,8 +93,8 @@ class GameSession {
         this._broadcastScheduled = false;
         this.squisher.addListener(() => this._scheduleBroadcast());
 
-        this.gameMetadata = (typeof game.constructor.metadata === 'function') ? game.constructor.metadata() : {};
-        this.maxPlayers = this.gameMetadata.maxPlayers || 64;
+        this.gameMetadata = require('./runtime-metadata').runtimeMetadata(game.constructor);
+        this.maxPlayers = this.gameMetadata.maxPlayers;
         this.aspectRatio = this.gameMetadata.aspectRatio || { x: 16, y: 9 };
 
         // Player / spectator maps  —  values are raw WebSocket objects
@@ -663,6 +663,7 @@ class GameSession {
         if (!this._inputDispatcher) {
             this._inputDispatcher = new GameDispatcher(this.game, {
                 fileBuffers: true,
+                canControlGame: id => !!this.players[id],
                 toGameCoords: (x, y) => this._toGameCoords(x, y),
                 findNode: id => this.game.findNode(id)
                     || (this.frameEnabled && this.frame.topLayerRoot?.findChild(id)),
@@ -690,9 +691,9 @@ class GameSession {
             || y <= this.bezelY / 2 || y >= 100 - this.bezelY / 2
         );
         if (!inBezel) {
-            for (const layer of this.game.getLayers()) layers.push({
+            for (const layer of Object.values(this.game.getLayers() || {}).filter(layer => layer?.root)) layers.push({
                 ...layer, scale: layer.scale || this.scale,
-                interactive: !(this.spectatorsEnabled && this.spectators[playerId]),
+                interactive: layer.interactive !== false && !!this.players[playerId],
             });
         }
         if (this.frameEnabled && this.frame.topLayerRoot) layers.push({ root: this.frame.topLayerRoot });

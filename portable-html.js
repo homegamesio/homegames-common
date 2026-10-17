@@ -80,7 +80,7 @@ return new TextEncoder().encode(await HomegamesClient.PortableProject.buildIsola
 share:()=>client.showShare(),exports:()=>client.viewExports(),'copy-share':shareCopy,'manual-connect':()=>pairing?.show(),
 'pause-input':()=>client.setInputEnabled(false),'resume-input':()=>{client.setInputEnabled(true);if(payload.studioDebug)client._localSession?._updateInputAttachment();},'player-name':name=>client.setPlayerName(name)
 });
-const ready=status=>clientSource.setState({title:project.metadata.name||'Homegame',author:project.metadata.author||project.metadata.createdBy||'',status,ready:true,sharing:!!payload.sharing,playerNames:typeof client.setPlayerName==='function'});
+const ready=status=>clientSource.setState({title:project.metadata.name||'Homegame',author:project.metadata.author||project.metadata.createdBy||'',status,ready:true,sharing:!!payload.sharing,multiplayer:client._localSession?client._localSession.maxPlayers>1:true,playerNames:typeof client.setPlayerName==='function'});
 client=new HomegamesClient({containerId:'game',chrome:false,localHome:false,share:payload.sharing,saveStore,platform:clientSource,playerName:await clientSource.getPlayerName?.(),
 loadLocalGame:async()=>HomegamesClient.PortableProject.prepareTrustedLocalGame(project,{trusted:true,installationId:payload.installationId}),
 onReady:()=>{ready('Playing locally');debug?.ready();},onSessionStatus:state,onError:fail});

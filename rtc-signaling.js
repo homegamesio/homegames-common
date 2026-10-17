@@ -2,7 +2,7 @@
 // Catalog discovery is available only to explicitly configured legacy hosts.
 const crypto = require('crypto');
 const WebSocket = require('ws');
-const { isIP } = require('net');
+const { budget, clientIp } = require('./network-limits');
 
 const id = () => crypto.randomBytes(18).toString('base64url');
 const urls = value => (value || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -23,9 +23,15 @@ const iceFromEnv = (env = process.env) => {
 };
 
 const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
-    maxRooms = 1000, maxConnections = 4096, heartbeatMs = 15000, trustLoopbackProxy = false,
+    maxRooms = 1000, maxConnections = 4096, maxConnectionsPerIp = 64,
+    connectionsPerMinute = 120, registrationsPerMinute = 60, globalRegistrationsPerMinute = 600,
+    heartbeatMs = 15000, trustLoopbackProxy = false,
     resolveGame = null, onRoomCreated = null, leaseMs = 90000, now = Date.now, allowOtherUpgrades = false } = {}) => {
     const rooms = new Map();
+    const connections = new Map();
+    const admitConnection = budget({ limit: connectionsPerMinute, now });
+    const admitRegistration = budget({ limit: registrationsPerMinute, now });
+    const admitGlobal = budget({ limit: globalRegistrationsPerMinute, maxKeys: 1, now });
     const wss = new WebSocket.Server({ noServer: true, maxPayload: 64 * 1024 });
     const send = (ws, data) => {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -70,25 +76,21 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
     };
     const upgrade = (req, socket, head) => {
         if (req.url !== path) { if (!allowOtherUpgrades) socket.destroy(); return; }
-        if (wss.clients.size >= maxConnections) { socket.destroy(); return; }
+        const ip = clientIp(req, trustLoopbackProxy);
+        if (!ip || wss.clients.size >= maxConnections || (connections.get(ip) || 0) >= maxConnectionsPerIp || !admitConnection(ip)) { socket.destroy(); return; }
         wss.handleUpgrade(req, socket, head, ws => wss.emit('connection', ws, req));
     };
     server.on('upgrade', upgrade);
     wss.on('connection', (ws, req) => {
         ws.alive = true;
-        ws.ip = req.socket.remoteAddress;
-        // The local nginx must overwrite X-Real-IP. Never trust this header
-        // from a directly connected Internet client (or a non-loopback proxy).
-        if (trustLoopbackProxy && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(ws.ip)
-            && typeof req.headers['x-real-ip'] === 'string' && isIP(req.headers['x-real-ip'])) {
-            ws.ip = req.headers['x-real-ip'];
-        }
+        ws.ip = clientIp(req, trustLoopbackProxy);
+        connections.set(ws.ip, (connections.get(ws.ip) || 0) + 1);
         ws.on('pong', () => { ws.alive = true; });
         ws.on('error', () => {});
         const registration = setTimeout(() => { if (!ws.room) ws.close(1008); }, 10000);
         registration.unref?.();
         let windowAt = Date.now(), count = 0;
-        ws.on('message', async raw => {
+        const receive = async raw => {
             if (Date.now() - windowAt > 1000) { windowAt = Date.now(); count = 0; }
             if (++count > 100) return fail(ws, 'Too many signaling messages');
             let msg;
@@ -104,6 +106,7 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
             }
             if (!ws.room) {
                 if (ws.registering) return fail(ws, 'Room registration is still in progress');
+                if (!admitRegistration(ws.ip) || !admitGlobal('all')) return fail(ws, 'Too many room requests; try again shortly');
                 if (msg.type === 'create') {
                     const hasCapacity = () => rooms.size < maxRooms && [...rooms.values()].filter(r => r.host.ip === ws.ip).length < 20;
                     if (!hasCapacity()) return fail(ws, 'Room limit reached');
@@ -128,20 +131,21 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
                     if (visibility === 'public' && !game) return fail(ws, 'Public rooms require a published game');
                     const capacity = Math.min(17, Number.isInteger(game?.maxPlayers) && game.maxPlayers > 0 ? game.maxPlayers : 17,
                         Number.isInteger(msg.maxPlayers) && msg.maxPlayers > 0 ? msg.maxPlayers : 17);
+                    const iceServers = getIceServers();
                     const room = { id: id(), invite: id(), host: ws, peers: new Map(), game, visibility,
                         maxPlayers: capacity, playerCount: 1, createdAt: now(), updatedAt: now() };
                     rooms.set(room.id, room); ws.room = room;
                     if (game && onRoomCreated) Promise.resolve().then(() => onRoomCreated({ ...game, visibility })).catch(() => {});
                     send(ws, { type: 'created', protocol: 2, roomId: room.id, invite: room.invite, visibility,
-                        heartbeatIntervalMs: Math.min(15000, Math.floor(leaseMs / 3)), iceServers: getIceServers() });
+                        heartbeatIntervalMs: Math.min(15000, Math.floor(leaseMs / 3)), iceServers });
                 } else if (msg.type === 'join') {
                     const room = rooms.get(msg.roomId);
                     if (!room || !live(room) || (room.invite !== msg.invite && room.visibility !== 'public')) {
                         return fail(ws, 'This invitation has ended or is invalid');
                     }
                     if (full(room)) return fail(ws, 'This room is full');
-                    ws.room = room; ws.peerId = id(); room.peers.set(ws.peerId, ws);
                     const iceServers = getIceServers();
+                    ws.room = room; ws.peerId = id(); room.peers.set(ws.peerId, ws);
                     send(ws, { type: 'joined', peerId: ws.peerId, iceServers });
                     send(room.host, { type: 'peer-joined', peerId: ws.peerId, iceServers });
                 } else return fail(ws, 'Create or join a room first');
@@ -186,8 +190,11 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
             }
             const target = ws === room.host ? room.peers.get(msg.peerId) : room.host;
             if (target) send(target, { type: 'signal', peerId: ws.peerId || msg.peerId, description, candidate });
-        });
+        };
+        ws.on('message', raw => { void receive(raw).catch(() => fail(ws, 'Connection service temporarily unavailable')); });
         ws.on('close', () => {
+            const count = (connections.get(ws.ip) || 1) - 1;
+            if (count) connections.set(ws.ip, count); else connections.delete(ws.ip);
             clearTimeout(registration);
             const room = ws.room;
             if (!room) return;
@@ -220,7 +227,7 @@ const attachRtcSignaling = (server, { path = '/rtc', getIceServers = iceFromEnv,
         clearInterval(timer);
         server.removeListener('upgrade', upgrade);
         for (const ws of wss.clients) ws.terminate();
-        rooms.clear(); wss.close();
+        rooms.clear(); connections.clear(); wss.close();
     };
     server.once('close', close);
     return { rooms, close, handleRequest };

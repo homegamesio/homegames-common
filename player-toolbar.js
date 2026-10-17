@@ -116,6 +116,7 @@ function createPlayerToolbar(window, options = {}) {
                 button.type = 'button'; actions.set(key, button); if (!primary.has(button)) list.append(button); }
             if (value.id) button.id = value.id;
             if (button !== editButton) button.textContent = value.label;
+            button.title = value.title || '';
             button.hidden = !!value.hidden; button.disabled = !!value.disabled || running.has(key);
             if (key === 'install' || key === 'download-html') placeDownload();
             button.onclick = () => {

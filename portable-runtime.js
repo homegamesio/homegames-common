@@ -11,7 +11,7 @@ function loadTrustedGame(project, squishMap, { trusted = false } = {}) {
     const version = project.manifest.runtime.squishVersion;
     const squish = squishMap[version];
     if (!squish) throw new Error(`Runtime squish-${version} is not installed`);
-    class ProjectAsset extends require('squish-146').Asset {
+    class ProjectAsset extends require('squish-150').Asset {
         constructor(info, supplied) {
             if (supplied !== undefined) {
                 if (!(supplied instanceof ArrayBuffer) && !ArrayBuffer.isView(supplied) && !Array.isArray(supplied)) throw new Error('Generated assets need byte data');
@@ -47,6 +47,7 @@ function loadTrustedGame(project, squishMap, { trusted = false } = {}) {
     };
     const gameClass = load(project.manifest.entry);
     if (typeof gameClass !== 'function' || !(gameClass.prototype instanceof squish.Game)) throw new Error('Project entry must export a Squish Game class');
+    require('./runtime-metadata').bindRuntimeMetadata(gameClass, project.metadata);
     return require('./game-project').bindGameProject(gameClass, () => project, { supportedRuntimes: Object.keys(squishMap) },
         { files: require('./user-exports').projectExports(project) });
 }
