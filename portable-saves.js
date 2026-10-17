@@ -19,6 +19,7 @@ function attachSaveHost(window, frame, settings) {
     };
     const envelope = (data, schema = versionId) => ({ gameKey, gameId, versionId: schema, savedAt: Date.now(), data: clean(data) });
     function database() {
+        if (settings.database) return Promise.resolve(settings.database);
         if (!dbPromise) dbPromise = new Promise((resolve, reject) => {
             let blocked = false;
             const request = window.indexedDB.open('homegames-portable-saves', 1);
@@ -67,7 +68,7 @@ function attachSaveHost(window, frame, settings) {
         if (storageFailure) throw storageFailure;
         const db=await database(), next=latest;
         await new Promise((resolve,reject) => {
-            const tx=db.transaction('saves','readwrite'),store=tx.objectStore('saves');let error;
+            const tx=settings.transaction ? settings.transaction(['saves']) : db.transaction('saves','readwrite'),store=tx.objectStore('saves');let error;
             const request=store.get([installationId,versionId]);
             request.onsuccess=()=>{
                 try {

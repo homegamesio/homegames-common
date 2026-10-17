@@ -4,6 +4,7 @@
 function attachClientHost(window, frame, recordAudio, exportStorage, createExportsViewer, recordVideo, createPlayerToolbar, options = {}) {
     const document = window.document;
     let port, sequence = 0, closed = false, toolbar = options.toolbar, ownToolbar = false, recording, viewer;
+    let gameTitle = options.title;
     const pending = new Map();
     function request(format, name) {
         if (!port || closed) return Promise.reject(new Error('The player is not ready'));
@@ -16,9 +17,15 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
     function command(action, value) { if (port && !closed) port.postMessage({ type: 'player-control', action, value }); }
     async function download(format) {
         try {
+            // The host can supply a recovered catalog name for older packs.
+            // Otherwise use the title announced by the current game. Keep this
+            // self-contained: this adapter is also embedded in downloaded HTML.
+            const name = typeof options.downloadName === 'function' ? options.downloadName() : options.downloadName;
+            let stem = String(name || gameTitle || 'game').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'game';
+            if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(stem)) stem += '-game';
             status('Preparing game download…');
             const bytes = await request(format), url = window.URL.createObjectURL(new Blob([bytes], { type: format === 'html' ? 'text/html' : 'application/zip' }));
-            const link = document.createElement('a'); link.href = url; link.download = 'my-game.' + format; link.click();
+            const link = document.createElement('a'); link.href = url; link.download = stem + '.' + format; link.click();
             setTimeout(() => window.URL.revokeObjectURL(url), 30000); status('Game copy downloaded');
         } catch (e) { status(e.message); }
     }
@@ -28,7 +35,8 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
         port.onmessage = event => {
             const message = event.data;
             if (!closed && message?.type === 'player-state') {
-                if (typeof message.title === 'string') toolbar?.setTitle(message.title.slice(0, 200));
+                if (typeof message.title === 'string') { gameTitle = message.title.slice(0, 200); toolbar?.setTitle(gameTitle); }
+                if (typeof message.author === 'string') toolbar?.setAuthor?.(message.author.slice(0, 200));
                 if (typeof message.status === 'string') status(message.status.slice(0, 300));
                 if (message.ready) {
                     toolbar?.setPlayerName(options.profile?.get() || '', message.playerNames && options.profile ? value => {
@@ -40,6 +48,8 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
                     }
                     toolbar?.setAction('download-html', { label: 'Download game HTML', id: options.htmlId, run: () => download('html') });
                     toolbar?.setAction('download-zip', { label: 'Download game ZIP', id: options.zipId, run: () => download('zip') });
+                    if (options.editGame) toolbar?.setAction('edit-game', { label: 'Edit this game', id: 'edit-game',
+                        run: () => options.editGame(() => request('zip')) });
                 }
                 return;
             }
@@ -77,7 +87,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
         };
         frame.contentWindow.postMessage({ type: 'homegames-client-port-v1', playerName: options.profile?.get() }, '*', [channel.port2]);
         if (!toolbar && createPlayerToolbar) {
-            toolbar = createPlayerToolbar(window, { title: options.title, home: options.home, status: 'Starting game…',
+            toolbar = createPlayerToolbar(window, { title: options.title, author: options.author, home: options.home, status: 'Starting game…',
                 onOpen: () => command('pause-input'), onClose: () => command('resume-input') });
             ownToolbar = true; frame.before(toolbar.bar);
         }

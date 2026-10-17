@@ -2,7 +2,7 @@
 
 > Grounding reference for Homegames platform questions and SquishJS game authoring. **Part I** describes the product and implementation; **Part II** describes the game contract, including differences between portable projects and the retained hosted publishing path.
 >
-> **Implementation review: October 11, 2026.** This describes the current local working-tree code, including portable Studio, exports, browser saves and RTC. It does not establish what homegames.io has deployed. Existing downloaded HTML files retain the runtime bundled when they were exported.
+> **Implementation review: October 16, 2026.** This describes the current local working-tree code, including portable Studio, exports, browser saves and RTC. It does not establish what homegames.io has deployed. Existing downloaded HTML files retain the runtime bundled when they were exported.
 
 ---
 
@@ -88,10 +88,11 @@ These are three different kinds of persistence:
 
 | Data | Current local-first storage | Portable backup |
 | --- | --- | --- |
-| Draft source and authored media | Studio IndexedDB project library | Project `.zip` or playable `.html` |
-| Named source snapshots | Immutable versions in that browser's library | Export the selected version; history is not included |
+| Saved source and authored media | Studio IndexedDB project library after explicit Save | Project `.zip`, playable `.html`, or full Studio backup |
+| Source snapshots | Every explicit Save adds an immutable History entry | Full Studio backup includes history; individual game exports do not |
 | Game progress | Installation-scoped IndexedDB saves, when the game calls `saveGame` | Download save / Load save JSON |
 
+Unsaved source stays in memory until Save; a full Studio backup also captures that working copy.
 No account or cloud sync is involved. Clearing/evicting browser storage can lose
 projects and progress. Optional persistent-storage permission is best-effort;
 keep file backups. Importing a ZIP makes a new installation, and each newly
@@ -112,30 +113,35 @@ The local-first implementation is integrated into the **existing Studio**, using
 its editor, file tree, tabs, preview and asset tools. `studio-local.html` redirects
 there; it is not a separate product.
 
-- **New game:** the ten original templates (blank, click, keyboard, multiplayer,
-  text input, image upload, animation, scrolling world, buttons, glow & fade), plus
-  Pocket Chime. Templates are static portable ZIPs; no API/account request is needed.
-- **My Games / Import ZIP:** projects live in `homegames-studio-projects` IndexedDB
-  (schema v2). Imports validate bytes without executing code. Each import has a
-  fresh local installation identity. Previous guest-draft recovery preserves edits;
-  it is not a general hosted-project/asset migration tool.
-- **Editing:** draft source and binary files autosave locally, including incomplete
-  or invalid code. Play and export validate separately. Generation checks prevent
-  stale tabs overwriting newer edits; failed/quota-limited writes are visible.
-- **Versions:** Save snapshot creates a named immutable copy. Open snapshot previews
-  and exports that version read-only. Restore snapshot atomically backs up the
-  current draft before restoring source/assets. It does not roll back game progress.
-- **Assets:** uploads, drawing, recording and keyboard/audio tools write project
-  files, usually under `assets/`. Source references use project-relative paths.
-  These are different from session-only files chosen by a player during a game (§9).
-- **Preview / Share:** the game runs in an opaque sandboxed iframe with RTC and manual
-  invitations. The scene inspector and second simulated local preview player still
-  need integration with this isolated preview; real RTC guests are supported now.
-- **Export ZIP / HTML:** ZIP is a transparent, editable project archive. HTML is the
-  runnable browser copy. Source history and progress are separate from both exports.
-- **Guide:** this reference remains available for game authoring and external AI use.
-  Hosted publishing/settings/AI entry points are inactive in the local-first Studio;
-  `AI_FEATURES_ENABLED` is false. Legacy backend AI/docs handlers remain separate.
+- **Games:** opens a switcher over the main editor, with New game and Import game
+  (HTML or ZIP). Templates are static portable projects; no account is needed.
+- **Editing and Save:** edits remain in memory until explicit Save / Ctrl+S / Cmd+S.
+  Each successful Save atomically keeps source/media and adds an immutable History
+  snapshot. The optional save message names it; blank messages use Save N. Incomplete
+  code can be saved. Play, asset insertion and exports do not save the working copy.
+  Generation checks prevent stale tabs overwriting newer edits; failed writes keep
+  the working copy and message available for retry.
+- **History:** sits left of Files. Snapshots are read-only and can be played or exported.
+  Back to editing restores the in-memory working copy. Restore loads snapshot files
+  as unsaved edits; Save keeps them. Switching games or restoring over unsaved work
+  asks before discarding it. Source restoration does not roll back player progress.
+- **Assets:** a reusable browser library. Upload, Draw, Record and Keyboard keep
+  originals there. Add to game copies selected files into the current project;
+  Save keeps that project change. Authored references use relative asset paths,
+  not hosted IDs. Session uploads from players are a separate mechanism (§9).
+- **Preview:** Play runs current source in an isolated iframe. Options provides
+  inspection and a second local test player; Invite players connects real RTC guests.
+  Editing the source requires restarting Play to see the change.
+- **Export & share:** ZIP contains editable source/media; HTML is a playable copy.
+  Neither contains full source history or existing progress. Inviting players keeps
+  the running browser tab as host; Share a copy transfers a separate editable pack.
+- **Settings:** appearance, browser storage, and full-workspace backup/restore.
+  A .homegames-backup includes games, history, original assets, preview saves/exports,
+  preferences, and the current unfinished source without making an extra snapshot.
+  Restore replaces the workspace atomically and keeps an Undo last restore copy.
+- **Learn:** interactive examples, a getting-started tutorial, searchable API topics,
+  and task-oriented snippets with labeled insertion points. Copy full reference
+  keeps this document available for an external coding assistant.
 
 The isolated player cannot access the Studio's DOM or project storage. It receives
 only its project bytes and a private, installation-bound progress channel. This
@@ -265,8 +271,8 @@ account backend and publishing adds API/MongoDB/Forgejo/RabbitMQ/validation serv
   full **per-player view snapshots**, not deltas or the entire combined host tree.
   Identical frames can be skipped and queued obsolete frames coalesced.
 - Squish is the versioned binary node format. Default authoring target: `squish-142`
-  (`squishjs@1.4.2`). The browser bundle currently contains **142, 143 and 145**;
-  the shared Node loader map also contains **146**. The publish runner uses the
+  (`squishjs@1.4.2`). The browser bundle and shared Node loader currently contain
+  **142, 143, 145 and 146**. The publish runner uses the
   map included in its image. Do not infer browser support from Node availability;
   portable validation rejects unavailable/mismatched versions rather than substituting.
   References to 144-era APIs below describe behavior introduced then, not a bundled
@@ -939,7 +945,7 @@ this.setTimeout(() => this.base.removeChild(sound.id), 250);
 
 The `assetInfo` key (`'potato'`, `'hiss'`) names a **logical entry in `metadata().assets`**, whose value loads bytes from a project path (portable) or hosted asset ID (legacy). Keep the key stable; it is not itself a database ID or a file path.
 
-> **Audio is deduped by asset KEY, not by node.** The client tracks playing sounds per key: two nodes with the same key play one sound, and a sound only restarts after its key has been absent from at least one rendered frame — a remove + re-add in the same tick won't re-trigger it, and a sound that finished playing won't replay while its node just sits in the tree. So the pattern is always **add to play, remove when done, re-add to replay**. Two platform behaviors games don't manage: browsers keep all audio silent until the player's first tap/click/keypress (autoplay policy — don't front-load a sound before any interaction), and players who mute sound in their settings simply don't get audio; games do nothing about either.
+> **Each audio node plays once.** The client tracks playback by node ID plus asset key. A fresh `GameNode.Asset` can replay the same clip; two separate nodes can play it at the same time. Leaving a finished node attached does not loop it. Remove old sound nodes to stop playback and avoid accumulating them; use a fresh node for the next play. Reusing the exact same node requires its sound to be absent from a rendered frame before it can restart. Start audio from a player action so browser autoplay rules allow it. Muted players do not hear audio.
 
 ### 7.3.1 Cropping an image / spritesheets (`squish-139`+)
 
@@ -1987,8 +1993,8 @@ Runtime:      one host-authoritative game instance: browser LocalSession (local 
               Share/QR joins the running host; it sends views/media, not editable game source.
               Manual offer/answer bypasses Homegames signaling but cannot guarantee all NAT paths.
 Portable:     ordinary .zip = homegame.json + source + media + generated inventory; .html = playable copy.
-              default squish-142; browser supports 142/143/145; pin matching manifest/metadata/require.
-              Node map also has 146; that does not make it available in the browser bundle.
+              default squish-142; browser supports 142/143/145/146; pin matching manifest/metadata/require.
+              The publish runner must also contain the chosen version when using legacy publishing.
 Saves:        constructor({saveGame, saveData}); validate loaded JSON and rebuild nodes from state.
               Portable: <=1 MiB UTF-8 JSON; Promise resolves after IndexedDB commit, no write debounce.
               installation + save-schema:N slot; source snapshots don't roll back progress.
@@ -2025,8 +2031,8 @@ Nodes:        GameNode.Shape({ shapeType, coordinates2d, fill, color, border, on
               GameNode.Text({ textInfo:{ text,x,y,size,align,color,font }, playerIds })       // NO onClick
               GameNode.Asset({ coordinates2d, assetInfo:{ key:{pos:{x,y},size:{x,y},startTime} }, playerIds })  // clickable
               image drawn from assetInfo pos/size; clicks hit coordinates2d -> keep them aligned (§7.3)
-              audio = zero-size Asset; add to tree = play, remove = stop; deduped by KEY — the key must
-              leave a frame before it re-triggers (§7.3). use real media; unavailable assets -> shapes/text.
+              audio = zero-size Asset; add to tree = play, remove = stop; tracked by node ID + asset key.
+              Use a fresh node to replay a clip (§7.3). Remove old nodes; use bundled media.
               Asset crop (squish-139+): assetInfo.key.{cropLeft,cropTop,cropRight,cropBottom} = % inset per edge -> spritesheets (§7.3.1)
 Button:       no button node + Text isn't clickable -> clickable Shape (onClick) with a Text node on top (§7.2.1)
 

@@ -1,10 +1,10 @@
 'use strict';
 
 // Browser host storage. Embedded in standalone HTML as a self-contained adapter.
-function createExportStorage(window, { installationId, gameId, packageRevision = 'local' }) {
+function createExportStorage(window, { installationId, gameId, packageRevision = 'local', database: sharedDatabase, transaction }) {
     if (typeof installationId !== 'string' || !installationId || typeof gameId !== 'string' || !gameId) throw new Error('Export storage requires a host-selected game identity');
     const key = [installationId, gameId, packageRevision]; let database;
-    const open = () => database ||= new Promise((resolve, reject) => {
+    const open = () => sharedDatabase ? Promise.resolve(sharedDatabase) : database ||= new Promise((resolve, reject) => {
         const request = window.indexedDB.open('homegames-user-exports', 1);
         request.onupgradeneeded = () => request.result.createObjectStore('exports');
         request.onerror = () => reject(request.error);
@@ -35,7 +35,7 @@ function createExportStorage(window, { installationId, gameId, packageRevision =
             validate({ [name]: bytes }); bytes = bytes.slice();
             const db = await open();
             return new Promise((resolve, reject) => {
-                const tx = db.transaction('exports', 'readwrite'), store = tx.objectStore('exports'), request = store.get(key); let error;
+                const tx = transaction ? transaction(['exports']) : db.transaction('exports', 'readwrite'), store = tx.objectStore('exports'), request = store.get(key); let error;
                 request.onsuccess = () => { try { const files = { ...request.result, [name]: bytes }; validate(files); store.put(files, key); } catch (e) { error = e; tx.abort(); } };
                 tx.oncomplete = () => resolve();
                 tx.onabort = () => reject(error || tx.error || new Error('Unable to save export'));

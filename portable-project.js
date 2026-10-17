@@ -317,5 +317,26 @@ function checkSyntax(source) {
     catch (error) { return { message: error.message, line: error.loc?.line || 1 }; }
 }
 
-module.exports = { checkSyntax, MANIFEST, INVENTORY, LIMITS, normalizePath, resolveModule, canonical,
+// Library artwork is read from the entry's literal metadata, even when an
+// unrelated project file is unfinished. Never run game code to find an image.
+function thumbnailPath(files) {
+    try {
+        const manifest = json(bytes(files[MANIFEST]), MANIFEST), entry = normalizePath(manifest.entry);
+        const source = bytes(files[entry]);if(source.length > LIMITS.sourceBytes)return null;
+        const tree = acorn.parse(text(source), { ecmaVersion: 'latest', sourceType: 'script' });
+        const methods = [], bindings = new Map();
+        walk(tree, node => { if(node.type === 'MethodDefinition' && node.static && !node.computed && (node.key.name ?? node.key.value) === 'metadata')methods.push(node); });
+        const body = methods[0]?.value.body.body;
+        if(methods.length !== 1 || body.length !== 1 || body[0].type !== 'ReturnStatement' || body[0].argument?.type !== 'ObjectExpression')return null;
+        for(const statement of tree.body)if(statement.type === 'VariableDeclaration' && statement.kind === 'const') {
+            for(const declaration of statement.declarations)if(declaration.id.type === 'Identifier')bindings.set(declaration.id.name, declaration.init);
+        }
+        const property = body[0].argument.properties.find(prop => prop.type === 'Property' && !prop.computed && !prop.method && prop.kind === 'init' && (prop.key.name ?? prop.key.value) === 'thumbnail');
+        if(!property)return null;
+        const path = normalizePath(literal(property.value, 'thumbnail', bindings));
+        return own(files, path) ? path : null;
+    } catch (_) { return null; }
+}
+
+module.exports = { checkSyntax, thumbnailPath, MANIFEST, INVENTORY, LIMITS, normalizePath, resolveModule, canonical,
     createProject, exportArchive, importArchive, assetBundle };

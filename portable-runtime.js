@@ -55,6 +55,7 @@ function prepareTrustedLocalGame(project, squishMap, { trusted = false, installa
     if (typeof installationId !== 'string' || !/^[a-zA-Z0-9-]{16,80}$/.test(installationId)) throw new Error('A trusted local installation ID is required for project saves');
     return {
         name: project.metadata.name || 'Homegame',
+        author: project.metadata.author || project.metadata.createdBy,
         gameClass: loadTrustedGame(project, squishMap, { trusted }),
         // No authored media means no packet. RTC correctly rejects zero-byte
         // packets; uploads can still register assets later in the session.
