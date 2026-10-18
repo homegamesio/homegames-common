@@ -30,9 +30,9 @@ Browser players share `player-toolbar.js`: one top row. Catalog play shows Home,
 
 ## Squish versions and loading
 
-`game-loader.js` exports `squishMap`, `DEFAULT_SQUISH_VERSION` (`142`), AST version parsing/detection, game class loaders and Forgejo archive loading. `detectSquishVersion(code)` is exported and supplies a fallback for raw-source sessions.
+`game-loader.js` exports `squishMap`, `DEFAULT_SQUISH_VERSION` (`150`), AST version parsing/detection, game class loaders and Forgejo archive loading. `detectSquishVersion(code)` is exported and supplies a fallback for raw-source sessions.
 
-Current Node and browser maps: **142, 143, 145, 146**, installed as pinned npm aliases.
+Current Node and browser maps contain only **150**, installed as the pinned `squish-150` alias for MIT Squish 1.5.0.
 New games export a class from `index.js` with static metadata containing a stable
 UUID `gameId`, `name` and an explicit integer `maxPlayers` from 1 to 255. The runtime
 version comes from `require('squish-NNN')`; no authored `homegame.json`, duplicate

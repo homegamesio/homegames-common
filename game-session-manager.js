@@ -59,6 +59,8 @@ class PortPool {
 let sessionIdCounter = 0;
 
 class GameSessionManager {
+    static get supportsPreparedImages() { return true; }
+
     /**
      * @param {object} opts
      * @param {number} [opts.portMin] — start of port range (default 7002)
@@ -66,6 +68,7 @@ class GameSessionManager {
      * @param {string} [opts.dockerImageDir] — path to dir containing the Dockerfile for homegames-runner
      * @param {string} [opts.childServerPath] — path to child_game_server.js (for fork fallback)
      * @param {string} [opts.dockerImageName] — Docker image name (default 'homegames-runner')
+     * @param {function} [opts.prepareDockerImage] — lazily returns { directory, imageName } from installed runtime files
      * @param {number} [opts.gracePeriodMs] — ms to wait with no players before killing (default 30000)
      * @param {number} [opts.lifecycleCheckMs] — ms between lifecycle checks (default 3000)
      * @param {object} [opts.forgejo] — { url, token } for Forgejo access
@@ -84,6 +87,7 @@ class GameSessionManager {
         );
         this.dockerImageDir = opts.dockerImageDir || null;
         this.dockerImageName = opts.dockerImageName || 'homegames-runner';
+        this.prepareDockerImage = opts.prepareDockerImage || null;
         this.childServerPath = opts.childServerPath || null;
         this.gracePeriodMs = opts.gracePeriodMs || 30000;
         this.lifecycleCheckMs = opts.lifecycleCheckMs || 3000;
@@ -112,23 +116,41 @@ class GameSessionManager {
         this.sessions = {};
         this._dockerChecked = false;
         this._dockerOk = false;
+        this._dockerPreparing = null;
+        this._dockerError = null;
     }
 
     /**
      * Determine whether Docker is available and the image is ready.
-     * A successful probe is cached; failures re-probe on the next call.
+     * Concurrent starts share preparation. Failed attempts can be retried.
      */
     async _ensureDockerReady() {
-        // Memoize only SUCCESS: a user who starts Docker after boot must be
-        // able to retry a session launch without restarting this process
-        // (matters especially now that fork is opt-in). Negative probes are
-        // cheap relative to a session launch, so re-checking is fine.
-        if (this._dockerChecked && this._dockerOk) return true;
+        if (this._dockerPreparing) return this._dockerPreparing;
+        this._dockerPreparing = this._prepareDocker();
+        try { return await this._dockerPreparing; }
+        finally { this._dockerPreparing = null; }
+    }
 
+    async _prepareDocker() {
+        this._dockerError = null;
         if (!(await isDockerAvailable())) {
             this.log.info('Docker not available — checking again on the next session start');
             this._dockerOk = false;
             return false;
+        }
+
+        if (this._dockerChecked && await isImageBuilt(this.dockerImageName)) return true;
+
+        if (this.prepareDockerImage) {
+            try {
+                const prepared = await this.prepareDockerImage();
+                this.dockerImageDir = prepared.directory;
+                this.dockerImageName = prepared.imageName;
+            } catch (err) {
+                this._dockerError = err;
+                this.log.error('Failed to prepare Docker image: ' + err.message);
+                return false;
+            }
         }
 
         if (this.dockerImageDir) {
@@ -137,6 +159,7 @@ class GameSessionManager {
                 this._dockerOk = true;
                 this.log.info('Docker available and homegames-runner image ready');
             } catch (err) {
+                this._dockerError = err;
                 this.log.error('Failed to build Docker image: ' + err.message);
                 this._dockerOk = false;
             }
@@ -146,7 +169,8 @@ class GameSessionManager {
             if (this._dockerOk) {
                 this.log.info('Docker available, existing homegames-runner image found');
             } else {
-                this.log.info('Docker available but no homegames-runner image. Specify dockerImageDir to build it. Using fork().');
+                this._dockerError = new Error('The game runner image is missing.');
+                this.log.info('Docker available but no game runner image. Specify dockerImageDir to build it.');
             }
         }
 
@@ -184,7 +208,9 @@ class GameSessionManager {
         }
 
         const sessionId = ++sessionIdCounter;
-        const useDocker = await this._ensureDockerReady();
+        let useDocker;
+        try { useDocker = await this._ensureDockerReady(); }
+        catch (error) { this.portPool.release(port); throw error; }
 
         // Fork runs game code with no isolation, so it's opt-in
         // (FORK_SESSIONS_ENABLED, toggleable live from the dashboard settings —
@@ -192,7 +218,8 @@ class GameSessionManager {
         // the opt-in, session starts fail loudly instead of silently forking.
         if (!useDocker && !this._forkAllowed()) {
             this.portPool.release(port);
-            throw new Error('Fork sessions are disabled and Docker is not running. Start Docker, or enable "Allow fork for child sessions" in settings.');
+            if (this._dockerError) throw new Error('Could not prepare the Docker game runner: ' + this._dockerError.message);
+            throw new Error('Fork sessions are disabled and Docker is not running. Start Docker, or enable "Run games without Docker" in settings.');
         }
 
         try {
@@ -395,20 +422,15 @@ class GameSessionManager {
 
         this.log.info(`Session ${sessionId} started via Docker on port ${port} (container ${containerId.slice(0, 12)})`);
 
-        if (opts.onReady) {
+        try {
             this.log.info(`Session ${sessionId} waiting for port ${port} to become reachable...`);
-            this._waitForPort(port, 15000).then(() => {
-                this.log.info(`Session ${sessionId} port ${port} is reachable, calling onReady`);
-                // Additional delay for Docker Desktop on macOS — the port mapping
-                // through the Linux VM can briefly refuse connections after the
-                // TCP check passes. The WebSocket upgrade needs the full stack ready.
-                return this._waitForWebSocket(port, 10000);
-            }).then(() => {
-                this.log.info(`Session ${sessionId} WebSocket confirmed, calling onReady`);
-                opts.onReady(session);
-            }).catch((err) => {
-                this.log.error(`Session ${sessionId} container never became ready: ${err.message}`);
-            });
+            await this._waitForPort(port, 15000);
+            // A mapped TCP port can accept connections before the game does.
+            await this._waitForWebSocket(port, 10000);
+            if (opts.onReady) opts.onReady(session);
+        } catch (error) {
+            await this.stopSession(sessionId);
+            throw new Error(`The game container could not start: ${error.message}`);
         }
 
         return { sessionId, port, type: 'docker' };

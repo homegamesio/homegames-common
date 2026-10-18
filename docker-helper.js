@@ -11,21 +11,15 @@ const fs = require('fs');
 const docker = new Docker();
 
 // ---------------------------------------------------------------------------
-// Cache Docker availability for the process lifetime.
+// Probe on each launch. Docker Desktop can start or stop while Homegames runs.
 // ---------------------------------------------------------------------------
-let _dockerAvailable = null;
-
 const isDockerAvailable = async () => {
-    if (_dockerAvailable !== null) return _dockerAvailable;
-
     try {
         await docker.ping();
-        _dockerAvailable = true;
+        return true;
     } catch (err) {
-        _dockerAvailable = false;
+        return false;
     }
-
-    return _dockerAvailable;
 };
 
 // ---------------------------------------------------------------------------
@@ -208,6 +202,8 @@ const runGameContainer = async ({
             NanoCpus: parseCpuLimit(cpuLimit),
             PidsLimit: 64,
             CapDrop: ['ALL'],
+            ReadonlyRootfs: true,
+            SecurityOpt: ['no-new-privileges:true'],
             Tmpfs: {
                 '/tmp': 'rw,size=160m',
                 // The asset-cache bind below sits at ~/.homegames/asset-cache,
@@ -222,7 +218,13 @@ const runGameContainer = async ({
         },
     });
 
-    await container.start();
+    try {
+        await container.start();
+    } catch (error) {
+        // AutoRemove only takes effect after a successful start.
+        try { await container.remove({ force: true }); } catch (_) {}
+        throw error;
+    }
 
     return { containerId: container.id, port };
 };
