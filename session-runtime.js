@@ -1,4 +1,6 @@
-const { Squisher } = require('squish-150');
+// Session orchestration uses the current engine; encodeNode/decodeNode below
+// preserve each game's declared wire format, including existing 1.5.0 games.
+const { Squisher } = require('squish-151');
 const collectGameAssets = ({ game, customBottomLayer, customTopLayer }) => Object.assign({},
     game.constructor.metadata?.()?.assets, customBottomLayer?.assets,
     customTopLayer?.assets, game.getAssets?.());
