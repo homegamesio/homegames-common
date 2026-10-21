@@ -6,7 +6,9 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
     const document = window.document;
     let port, sequence = 0, closed = false, toolbar = options.toolbar, ownToolbar = false, recording, viewer, sharing;
     let gameTitle = options.title;
-    const liveMedia = options.createLiveMediaBridge?.(window, message => port?.postMessage(message), { host: true, busy: () => !!recording });
+    const liveMedia = options.createLiveMediaBridge?.(window, message => port?.postMessage(message), {
+        host: true, busy: () => !!recording, focusPlayer: () => frame.focus(),
+    });
     const pending = new Map(), shareRequests = new Map();
     function request(format, name) {
         if (!port || closed) return Promise.reject(new Error('The player is not ready'));

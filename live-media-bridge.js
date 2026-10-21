@@ -4,7 +4,7 @@
 // connection carries approved tracks; permission and hardware stay in the
 // surrounding page. No signaling service or STUN/TURN server is involved.
 // Self-contained because exported HTML embeds this function verbatim.
-function createLiveMediaBridge(window, send, { host = false, busy = () => false } = {}) {
+function createLiveMediaBridge(window, send, { host = false, busy = () => false, focusPlayer = () => {} } = {}) {
     let active, sequence = 0, closed = false;
     const document = window.document || {};
     const post = (entry, action, value = {}) => {
@@ -15,6 +15,7 @@ function createLiveMediaBridge(window, send, { host = false, busy = () => false 
         entry.closed = true;
         clearTimeout(entry.timer); clearTimeout(entry.disconnectTimer);
         entry.dialog?.close(); entry.dialog?.remove(); entry.button?.remove();
+        if (entry.dialog) focusPlayer();
         entry.pc?.close();
         entry.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
         if (active === entry) active = null;
@@ -76,6 +77,7 @@ function createLiveMediaBridge(window, send, { host = false, busy = () => false 
                     pc.addTrack(track, stream);
                 }
                 dialog.close(); dialog.remove();
+                entry.dialog = null; focusPlayer();
                 const button = entry.button = document.createElement('button');
                 button.textContent = 'Disconnect microphone / camera';
                 button.style.cssText = 'position:fixed;right:12px;bottom:12px;padding:10px;border:1px solid #fff;border-radius:8px;background:#8b2525;color:white;z-index:2147483647;font:13px system-ui';
@@ -136,10 +138,13 @@ function createLiveMediaBridge(window, send, { host = false, busy = () => false 
         post(active, 'released');
     };
     const visibility = () => { if (document.hidden) release(); };
+    // Focusing the game iframe also blurs the parent window. The document
+    // still has focus in that case; releasing would cancel every first press.
+    const blur = () => { if (!document.hasFocus?.()) release(); };
     const close = () => { if (active) finish(active); closed = true;
-        window.removeEventListener('pagehide', close); window.removeEventListener('blur', release); document.removeEventListener?.('visibilitychange', visibility); };
+        window.removeEventListener('pagehide', close); window.removeEventListener('blur', blur); document.removeEventListener?.('visibilitychange', visibility); };
     window.addEventListener('pagehide', close);
-    if (host) { window.addEventListener('blur', release); document.addEventListener?.('visibilitychange', visibility); }
+    if (host) { window.addEventListener('blur', blur); document.addEventListener?.('visibilitychange', visibility); }
     return { handle, close, get busy() { return !!active; },
         request(info) {
             if (host || closed || active) throw new Error('Microphone/camera is unavailable or already active');
