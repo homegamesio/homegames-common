@@ -7,7 +7,10 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
     let port, sequence = 0, closed = false, toolbar = options.toolbar, ownToolbar = false, recording, viewer, sharing;
     let gameTitle = options.title;
     const liveMedia = options.createLiveMediaBridge?.(window, message => port?.postMessage(message), {
-        host: true, busy: () => !!recording, focusPlayer: () => frame.focus(),
+        host: true, busy: () => !!recording,
+        // Let the dialog's close/click focus restoration finish first. Focusing
+        // its iframe element alone can leave the child window unfocused.
+        focusPlayer: () => setTimeout(() => { if (!closed && frame.isConnected) frame.contentWindow.focus(); }, 0),
     });
     const pending = new Map(), shareRequests = new Map();
     function request(format, name) {
