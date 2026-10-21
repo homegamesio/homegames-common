@@ -43,7 +43,7 @@ Server bundles are built/published by `homegames/build-bundle.js` and its publis
 - Check installed local dependency links/copies; a `file:` declaration does not update a running process or an embedded browser bundle by itself.
 - Node's canonical Squish aliases live in common; browser static requires live in `homegames-client/src/squish-map.js`. Add compatible browser entries deliberately and rebuild. A new Node version is not automatically available in browsers.
 - Core now prepares its Docker runner from installed production files on first use; the image tag includes a runtime-content hash. Updated code builds a new image without replacing containers that are still running. `node docker/prepare-context.js` prepares the same image explicitly. Existing downloaded HTML retains its embedded runtime until re-exported.
-- Node sessions require Docker or explicit host permission through **Run games without Docker**. Docker availability is rechecked for each launch, so starting Docker or retrying a failed build does not require restarting Core. Core's new preparation flow requires publication and installation of the October 18 Common fixes.
+- Node sessions require Docker or explicit host permission through **Run games without Docker**. Docker availability is rechecked for each launch, so starting Docker or retrying a failed build does not require restarting Core. Core's preparation flow requires Common 1.7.4 or later; Core and the native launcher now pin the published 1.7.4 release.
 - Worker changes require restarting the appropriate service: `api/worker.js` is publish validation; `worker/index.js` is certificate/docs/legacy AI work.
 
 ## Backups and recovery

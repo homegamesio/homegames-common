@@ -3,9 +3,9 @@
 // Homegames client API; neither side reads game metadata or a game instance.
 function attachClientHost(window, frame, recordAudio, exportStorage, createExportsViewer, recordVideo, createPlayerToolbar, options = {}) {
     const document = window.document;
-    let port, sequence = 0, closed = false, toolbar = options.toolbar, ownToolbar = false, recording, viewer;
+    let port, sequence = 0, closed = false, toolbar = options.toolbar, ownToolbar = false, recording, viewer, sharing;
     let gameTitle = options.title;
-    const pending = new Map();
+    const pending = new Map(), shareRequests = new Map();
     function request(format, name) {
         if (!port || closed) return Promise.reject(new Error('The player is not ready'));
         return new Promise((resolve, reject) => {
@@ -13,8 +13,22 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
             pending.set(id, { resolve, reject, timer, format }); port.postMessage({ type: 'download-game', id, format, name });
         });
     }
-    const status = text => { if (options.onPlayerStatus) options.onPlayerStatus(text); else toolbar?.setStatus(text); };
+    const status = (text, details = {}) => { if (options.onPlayerStatus) options.onPlayerStatus(text, details); else toolbar?.setStatus(text, details); };
     function command(action, value) { if (port && !closed) port.postMessage({ type: 'player-control', action, value }); }
+    function sharingLink(mode) {
+        if (!port || closed) return Promise.reject(new Error('The player is not ready'));
+        if (!['session', 'copy'].includes(mode)) return Promise.reject(new Error('Unknown sharing option'));
+        if (shareRequests.has(mode)) return shareRequests.get(mode);
+        const result = new Promise((resolve, reject) => {
+            const id = ++sequence;
+            const timer = setTimeout(() => { pending.delete(id); reject(new Error('Creating an invitation timed out. Try again.')); }, 35000);
+            pending.set(id, { resolve, reject, timer, sharing: true });
+            port.postMessage({ type: 'player-share', id, mode });
+        });
+        shareRequests.set(mode, result);
+        result.finally(() => { if (shareRequests.get(mode) === result) shareRequests.delete(mode); }).catch(() => {});
+        return result;
+    }
     async function download(format) {
         try {
             // The host can supply a recovered catalog name for older packs.
@@ -27,7 +41,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
             const bytes = await request(format), url = window.URL.createObjectURL(new Blob([bytes], { type: format === 'html' ? 'text/html' : 'application/zip' }));
             const link = document.createElement('a'); link.href = url; link.download = stem + '.' + format; link.click();
             setTimeout(() => window.URL.revokeObjectURL(url), 30000); status('Game copy downloaded');
-        } catch (e) { status(e.message); }
+        } catch (e) { status(e.message, { attention: true }); }
     }
     function connect(event) {
         if (closed || port || event.source !== frame.contentWindow || event.origin !== 'null' || event.data?.type !== 'homegames-client-connect-v1') return;
@@ -37,7 +51,11 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
             if (!closed && message?.type === 'player-state') {
                 if (typeof message.title === 'string') { gameTitle = message.title.slice(0, 200); toolbar?.setTitle(gameTitle); }
                 if (typeof message.author === 'string') toolbar?.setAuthor?.(message.author.slice(0, 200));
-                if (typeof message.status === 'string') status(message.status.slice(0, 300));
+                const ratio = message.aspectRatio;
+                if (ratio && Number.isFinite(ratio.x) && Number.isFinite(ratio.y) && ratio.x > 0 && ratio.y > 0) {
+                    toolbar?.setAspectRatio?.({ x: ratio.x, y: ratio.y });
+                }
+                if (typeof message.status === 'string') status(message.status.slice(0, 300), { attention: message.statusAttention === true });
                 if (message.ready) {
                     toolbar?.setPlayerName(options.profile?.get() || '', message.playerNames && options.profile ? value => {
                         if (closed) throw new Error('This player has closed. Reopen the game to change your name.');
@@ -45,15 +63,40 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
                     } : null);
                     for (const [key, label] of [['share', 'Invite'], ['copy-share', 'Share a copy'], ['manual-connect', 'Manual connection'], ['exports', 'View exports']]) {
                         const soloInvite = key === 'share' && message.multiplayer === false;
-                        toolbar?.setAction(key, key !== 'exports' && !message.sharing ? null : {
+                        toolbar?.setAction(key, (message.inlineSharing && ['share', 'copy-share'].includes(key)) || key !== 'exports' && !message.sharing ? null : {
                             label: soloInvite ? 'Invite (solo)' : label, disabled: soloInvite,
                             title: soloInvite ? 'This is a solo game. Use Share a copy to send it to a friend.' : '', run: () => command(key),
                         });
                     }
+                    if (message.sharing && message.inlineSharing) {
+                        if (!sharing || sharing.multiplayer !== (message.multiplayer !== false)) {
+                            sharing = { multiplayer: message.multiplayer !== false, getLink: sharingLink, dispose: () => command('dispose-sharing') };
+                            toolbar?.setSharing?.(sharing);
+                        }
+                    } else if (sharing) { toolbar?.setSharing?.(null); sharing = null; }
                     toolbar?.setAction('download-html', { label: 'Download game HTML', id: options.htmlId, run: () => download('html') });
                     toolbar?.setAction('download-zip', { label: 'Download game ZIP', id: options.zipId, run: () => download('zip') });
                     if (options.editGame) toolbar?.setAction('edit-game', { label: 'Edit this game', id: 'edit-game',
                         run: () => options.editGame(() => request('zip')) });
+                }
+                return;
+            }
+            if (!closed && message?.type === 'player-share-status' && typeof message.status === 'string'
+                && ['session', 'copy'].includes(message.mode)) {
+                toolbar?.setSharingStatus?.(message.status.slice(0, 300), message.mode); return;
+            }
+            if (!closed && message?.type === 'player-share-result') {
+                const entry = pending.get(message.id);
+                if (!entry?.sharing) return;
+                pending.delete(message.id); clearTimeout(entry.timer);
+                if (message.error) entry.reject(new Error(String(message.error).slice(0, 300)));
+                else {
+                    const { url, qr } = message;
+                    if (typeof url !== 'string' || url.length > 4096 || !/^https?:\/\//.test(url)
+                        || !Array.isArray(qr) || qr.length < 21 || qr.length > 177 || (qr.length - 21) % 4 !== 0
+                        || qr.some(row => typeof row !== 'string' || row.length !== qr.length || !/^[01]+$/.test(row))) {
+                        entry.reject(new Error('Invalid invitation received from the player'));
+                    } else entry.resolve({ url, qr });
                 }
                 return;
             }
@@ -82,7 +125,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
                 return;
             }
             const entry = pending.get(message?.id);
-            if (closed || message?.type !== 'game-download' || !entry) return;
+            if (closed || message?.type !== 'game-download' || !entry || entry.sharing) return;
             pending.delete(message.id); clearTimeout(entry.timer);
             if (message.error) entry.reject(new Error(String(message.error).slice(0, 300)));
             else if (entry.format === 'export-list' || entry.format === 'export-file') entry.resolve(message.value);
@@ -95,12 +138,11 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
                 onOpen: () => command('pause-input'), onClose: () => command('resume-input') });
             ownToolbar = true; frame.before(toolbar.bar);
         }
-        frame.parentElement.style.display = 'flex'; frame.parentElement.style.flexDirection = 'column';
-        frame.style.flex = '1'; frame.style.minHeight = '0'; frame.style.height = '0';
+        toolbar?.setGameArea?.(frame, frame.parentElement);
     }
     window.addEventListener('message', connect);
-    return { request, command, download, close() { closed = true; window.removeEventListener('message', connect); port?.close(); if (ownToolbar) toolbar?.dispose(); recording?.close(); viewer?.close();
-        for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Player closed')); } pending.clear(); } };
+    return { request, command, download, close() { command('dispose-sharing'); closed = true; if (sharing) { toolbar?.setSharing?.(null); sharing = null; } window.removeEventListener('message', connect); port?.close(); if (ownToolbar) toolbar?.dispose(); recording?.close(); viewer?.close();
+        for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Player closed')); } pending.clear(); shareRequests.clear(); } };
 }
 function connectClientSource(window, download, exports = {}, controls = {}) {
     let port, closed = false, sequence = 0, resolveConnect, state, playerName;
@@ -113,11 +155,22 @@ function connectClientSource(window, download, exports = {}, controls = {}) {
         if (state) port.postMessage({ type: 'player-state', ...state });
         port.onmessage = async event => {
             const message = event.data;
+            if (!closed && message?.type === 'player-share' && Number.isSafeInteger(message.id)
+                && ['session', 'copy'].includes(message.mode)) {
+                try {
+                    if (typeof controls['sharing-link'] !== 'function') throw new Error('Inline sharing is unavailable');
+                    const value = await controls['sharing-link'](message.mode);
+                    if (!closed) port.postMessage({ type: 'player-share-result', id: message.id, ...value });
+                } catch (error) {
+                    if (!closed) port.postMessage({ type: 'player-share-result', id: message.id, error: error.message });
+                }
+                return;
+            }
             if (!closed && message?.type === 'player-control' && Object.hasOwn(controls, message.action)) {
                 try {
                     if (message.action === 'player-name') playerName = message.value;
                     await controls[message.action](message.value);
-                } catch (error) { port.postMessage({type:'player-state', status:error.message}); }
+                } catch (error) { port.postMessage({type:'player-state', status:error.message, statusAttention:true}); }
                 return;
             }
             if (message?.type === 'audio-result' || message?.type === 'export-result') { const entry = recordings.get(message.id); if (!entry) return; recordings.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(new Error(message.error)) : entry.resolve(message.value); return; }
@@ -148,6 +201,7 @@ function connectClientSource(window, download, exports = {}, controls = {}) {
         });
     });
     return { setState(value) { state = { ...state, ...value }; if (!closed) port?.postMessage({ type:'player-state', ...state }); },
+        setSharingStatus(status, mode = 'copy') { if (!closed) port?.postMessage({ type:'player-share-status', status, mode }); },
         getPlayerName: async () => { await connected; return playerName; },
         recordAudio: info => request('record-audio', {recording:info}),
         recordVideo: info => request('record-video', {recording:info}),

@@ -14,5 +14,28 @@ const createSessionRuntime = (codec, game, options = {}) => {
         stop() { if (stopped) return; stopped = true; squisher.close(); options.userExportsStore?.close(); }
     };
 };
-const playerFrame = (squisher, playerId) => Uint8Array.from(squisher.getPlayerFrame(playerId).flat());
+const playerFrame = (squisher, playerId) => {
+    const parts = squisher.getPlayerFrame(playerId);
+    // Count and write directly into the transport-owned buffer. Array.flat()
+    // first allocates a numeric-array entry for every byte, for every player/frame.
+    // Preserve one-level flattening and skipped holes in numeric codec arrays.
+    let length = 0;
+    for (let i = 0; i < parts.length; i++) {
+        if (!(i in parts)) continue;
+        const part = parts[i];
+        if (Array.isArray(part)) {
+            for (let j = 0; j < part.length; j++) if (j in part) length++;
+        } else length++;
+    }
+    const frame = new Uint8Array(length);
+    let offset = 0;
+    for (let i = 0; i < parts.length; i++) {
+        if (!(i in parts)) continue;
+        const part = parts[i];
+        if (Array.isArray(part)) {
+            for (let j = 0; j < part.length; j++) if (j in part) frame[offset++] = part[j];
+        } else frame[offset++] = part;
+    }
+    return frame;
+};
 module.exports = { createSessionRuntime, playerFrame, collectGameAssets };
