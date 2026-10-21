@@ -1297,6 +1297,8 @@ Browsers may require a tap/click on the canvas to enable sound; video can begin 
 
 ### Live microphone and camera
 
+Sandboxed players request permission through the surrounding page. That page owns the microphone/camera and its disconnect button, and passes approved tracks into the game frame over a local WebRTC connection. This requires Common 1.7.8 and Client 0.2.5; the game frame keeps its opaque origin and cannot request device access directly.
+
 Browser/RTC sessions inject `media` into the game constructor. `await media.request(playerId, { audio: true, video: false, transmitting: false, pushToTalk: true })` asks that player to confirm capture in a platform dialog and returns a session-scoped stream handle. Catch denial, cancellation, unavailable devices and disconnect errors. Only one capture can be active per player.
 
 Reference its ID with native `GameNode.Stream`, available in `squish-151`. Import that version when using streams; the runtime version is inferred from the import. Squish serializes the stream reference and presentation properties; the session/client transports the live media separately.

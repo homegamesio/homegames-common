@@ -34,6 +34,8 @@ Server downloads are built and published separately by `homegames/build-bundle.j
 
 Common 1.7.6 and Client 0.2.3 support `squish-151` (Squish 1.5.1) and `squish-150` (1.5.0). The follow-up release uses the 1.5.1 Squisher for shared sessions while preserving each game’s declared codec. New projects use 151. Keep the 150 alias pinned to 1.5.0 for existing projects.
 
+Common 1.7.8 and Client 0.2.5 include live microphone/camera capture for sandboxed players. Permission and device controls belong to the surrounding page; a local WebRTC connection supplies the approved tracks to the game frame. Publish Common first, then build and publish Client against it, then install both versions and rebuild the website. Existing exported HTML retains its embedded runtime; export a new copy to include this fix.
+
 The Node map lives in Common's `game-loader.js`; the browser map is in Client's `src/squish-map.js`. Update both deliberately and rebuild the client. Check consumer lockfiles and installed copies as well as source manifests. Exported HTML must be regenerated to receive a runtime update.
 
 Core prepares a Docker runner from installed production files. Its image tag includes a runtime-content hash; updated code builds a new image without replacing active containers. `node docker/prepare-context.js` prepares it explicitly. Node sessions require Docker unless the host enables **Run games without Docker**. Browser-hosted play does not use Docker.
