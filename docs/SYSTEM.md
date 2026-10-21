@@ -1,10 +1,10 @@
 # Homegames — System overview
 
-Reviewed against the current local code on October 12, 2026, including uncommitted changes. This is an implementation map, not a statement about production hosts or deployed versions.
+Implementation map checked against source on October 20, 2026. Server downloads and exported HTML retain their bundled versions.
 
 Homegames makes and plays JavaScript games using SquishJS. The current Studio is **account-free**: users create browser projects, edit source and media, save local snapshots, and export ZIPs or playable HTML. One browser runs the simulation; friends join that browser over WebRTC. A home server remains an optional way to discover/install games and run browser or Node/WebSocket sessions.
 
-## What changed, and what remains
+## Product paths
 
 | Current path | State and dependencies |
 | --- | --- |
@@ -16,13 +16,13 @@ Homegames makes and plays JavaScript games using SquishJS. The current Studio is
 | Account backend | Account/profile/publishing routes are absent from the active API. No automatic hosted-data migration or deletion is performed. |
 | Self-hosting | Core serves a dashboard/client, browser games and optional Node/WebSocket sessions. homegames.link discovery and certificate jobs remain separate services. |
 
-Projects are not cloud-synchronized. Clearing browser storage can lose them. ZIP exports carry the selected source/media version; snapshot history and game progress need separate backups. Progress exists only when the game uses `saveGame`.
+Projects are not cloud-synchronized. Clearing browser storage can lose them. ZIP exports carry the selected source/media version; full Studio backups include history, while progress can also be backed up as save JSON. Progress exists only when the game uses `saveGame`.
 
-## Intended simplification and current gaps
+## Website and self-hosting
 
-The maintainer's intended destination is a static website serving bundled games and self-hosting downloads, an API limited to connection helpers (certificates, homegames.link and RTC), and player-owned games with bundled assets. Accounts, developer profiles and centralized publishing are to be retired. The website now builds that static collection from an explicit path list and serves game pages without JavaScript. The home dashboard now reads its local library. Legacy catalog/account source remains on disk, but the active API no longer loads those routes. Deployment retirement and historical-data migration are separate operational steps.
+The website serves static game pages, portable packs, Studio and self-hosting downloads. The active API is limited to connection helpers. Studio saves locally; accounts and centralized publishing are no longer part of the active workflow. Retained backend code and historical data are managed separately.
 
-Self-hosting and browser RTC already coexist with optional Node/WebSocket hosting. WebSocket hosting is a separate session mode, not automatic failover for a running RTC game. Core's local library discovers compatible unpacked game folders containing `index.js`, including those under `src/games` or `LOCAL_GAME_DIRECTORY`; portable projects may also declare a nested entry in `homegame.json`. Use the localhost dashboard’s Import ZIP button to validate and install an archive under app data; dropping an arbitrary ZIP into `src/games` does not install it. Current bundles ship all visible built-ins with local media, local RTC signaling and an explicit offline launch override; homegames.link/certificates are optional online helpers. Both transports carry Squish scene frames, but input/signaling/control messages also use JSON and media has separate transfer paths. A live Share invitation joins the host session; Share a copy sends an editable portable ZIP over a separate private RTC channel to a generic game-only receiver. The recipient builds/downloads a self-contained HTML and can keep an individual game app locally. Per-game manifests and bundles live on the device; the server has no game registration. Studio remains the authoring tool.
+Self-hosting and browser RTC already coexist with optional Node/WebSocket hosting. WebSocket hosting is a separate session mode, not automatic failover for a running RTC game. Core's local library discovers compatible unpacked game folders containing `index.js`, including those under `src/games` or `LOCAL_GAME_DIRECTORY`; portable projects may also declare a nested entry in `homegame.json`. Use the localhost dashboard’s Import ZIP button to validate and install an archive under app data; dropping an arbitrary ZIP into `src/games` does not install it. Current bundles ship all visible built-ins with local media, local RTC signaling and an explicit offline launch override; homegames.link/certificates are optional online helpers. Both transports carry Squish scene frames, but input/signaling/control messages also use JSON and media has separate transfer paths. A live invitation joins the host session; the player menu’s Share with friends action sends an editable portable ZIP over a separate private RTC channel to a generic game-only receiver. The recipient stores the verified project and a shared runtime, can download self-contained HTML, and can keep an individual game app locally. Per-game manifests and bundles live on the device; the server has no game registration. Studio remains the authoring tool.
 
 Homegames-authored code and cleared media are MIT licensed. Third-party components retain their own notices. New games use MIT Squish 1.5.1 (`squish-151`); MIT Squish 1.5.0 (`squish-150`) remains available for existing projects. Earlier published runtimes and releases retain their original licenses.
 
@@ -58,7 +58,7 @@ Signaling arranges peers; it neither executes games nor receives their gameplay 
 | `homegames-core` | Home dashboard, local library, Homenames, browser game serving, Node/WebSocket sessions and integration tests. |
 | `homegames` | Launcher/supervisor and downloadable server bundle builder/publisher. |
 | `api` | RTC signaling and IP/certificate helpers; legacy handlers/publish worker are not used by the active entry point. |
-| `worker` | Durable certificate, docs-question and legacy AI jobs; model bridge is configurable. |
+| `worker` | Retained external-worker code for older services; current certificates run within the API. |
 | `homegames.link` | LAN discovery/redirect and DNS registration; not a tunnel to private LAN addresses. |
 | `homegames-web` | Separate older browser host; Core also serves its client directly. |
 

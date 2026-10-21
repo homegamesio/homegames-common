@@ -1,8 +1,8 @@
-# Homegames — Master LLM Context
+# Homegames reference
 
 > Grounding reference for Homegames platform questions and SquishJS game authoring. **Part I** describes the product and implementation; **Part II** describes the game contract, for portable browser games and optional home-server sessions.
 >
-> **Implementation review: October 17, 2026.** This describes the current local working-tree code, including portable Studio, exports, browser saves and RTC. It does not establish what homegames.io has deployed. Existing downloaded HTML files retain the runtime bundled when they were exported.
+> **Checked against source: October 20, 2026.** Covers Studio, exports, browser saves and RTC. Existing downloaded HTML files retain the runtime bundled when they were exported.
 
 ---
 
@@ -44,10 +44,11 @@ or converting that code.
   The downloaded HTML contains game source, runtime and authored media; local play
   works without Homegames services. Studio caches its existing editor/player, templates, examples and guide after
   its first secure load; the catalog itself still needs a network load.
-- **Share / QR:** the host tab runs the authoritative simulation and stays open.
+- **Session invitations:** the host tab runs the authoritative simulation and stays open.
   Guests render per-player Squish frames and media, and send inputs back over RTC.
-  A guest does **not** receive editable source or a persistent game installation
-  by joining. **Share a copy** is a separate action that sends the portable ZIP
+  Joining does not automatically install a game. Joined players can request source
+  when the host provides project export. **Share with friends** in the player menu
+  is a separate action that sends the portable ZIP
   through another private RTC connection, after the recipient accepts.
 - **Keep a copy:** `/game-app.html` validates peer-transferred source/media and
   builds a self-contained HTML file using the static site's trusted runtime.
@@ -124,7 +125,7 @@ there; it is not a separate product.
   Save keeps that project change. Authored references use relative asset paths,
   not hosted IDs. Session uploads from players are a separate mechanism (§9).
 - **Preview:** Play runs current source in an isolated iframe. Options provides
-  inspection and a second local test player; Invite players connects real RTC guests.
+  inspection and a second local test player; the Homegames menu connects real RTC guests.
   Editing the source requires restarting Play to see the change.
 - **Export & share:** ZIP contains editable source/media; HTML is a playable copy.
   Neither contains full source history or existing progress. Inviting players keeps
@@ -138,7 +139,7 @@ there; it is not a separate product.
   keeps this document available for an external coding assistant.
 
 The isolated player cannot access the Studio's DOM or project storage. It receives
-only its project bytes and a private, installation-bound progress channel. This
+its project bytes and explicit channels for installation-bound progress, exports and player controls. This
 protects the editor origin; it is not a CPU/memory limit or a guarantee that arbitrary
 game code is safe. The older CLI `html --trusted` builder still uses a separate
 explicit-trust execution path. See the portable implementation reference below.
@@ -171,9 +172,10 @@ explicit-trust execution path. See the portable implementation reference below.
 ## Self-hosting
 
 Core is an optional home server. The launcher (`homegames/index.js`) supervises it
-and opens the ready URL reported by Core. Install sibling dependencies (including
-`homepad`, `squish`, common and client), build `homegames-client`, then start the
-launcher with `node index.js`, or Core directly with `npm start`.
+and opens the ready URL reported by Core. In the Core checkout, run `npm ci` and
+`npm start` to use its pinned published dependencies. The client package includes
+its built browser bundle. The launcher is an optional supervisor with its own
+dependency pins; keep those aligned when preparing a server release.
 
 - The normal dashboard serves its client on `HOME_PORT`, browses built-in/installed
   games and can download catalog games. Play hosts games in the browser with RTC
@@ -186,7 +188,7 @@ launcher with `node index.js`, or Core directly with `npm start`.
   Browser-hosted games do not use this container/fork path.
 - Source config uses main port 9801, Homenames 7400 and child ports 8300–8400.
   The downloadable bundle builder instead chooses 7001, 7100 and 7002–7099,
-  disables discovery/HTTPS initially and enables fork fallback. Environment and
+  disables discovery, HTTPS and fork fallback initially. Environment and
   user overrides can change these. Use the logged ready URL, not an assumed port.
 - homegames.link discovery registers the server over an outbound connection and
   redirects visitors on the same public connection to its LAN address. It is not
@@ -232,11 +234,11 @@ rebuilt together to include fixes.
   full **per-player view snapshots**, not deltas or the entire combined host tree.
   Identical frames can be skipped and queued obsolete frames coalesced.
 - Squish is the versioned binary node format. Default authoring target: `squish-151`
-  (`squishjs@1.5.0`). The browser bundle and shared Node loader contain only
-  **150**. The supported version is inferred from the source
+  (`squishjs@1.5.1`). The browser bundle and shared Node loader support
+  **151** and **150** (Squish 1.5.0). The supported version is inferred from the source
   import. Portable validation rejects unavailable or conflicting versions rather
   than substituting another runtime.
-  Older imports must be updated explicitly before use.
+  Imports older than 150 must be migrated explicitly before use.
 - **homegames-client** renders Squish onto canvas, handles input/media and contains
   LocalSession. A browser host supports multiple local/RTC players. RTC communication
   workers handle transport queues; simulation, Squish serialization and canvas work
@@ -248,7 +250,7 @@ rebuilt together to include fixes.
   progress storage to the trusted parent's installation identity.
 - **Studio storage:** drafts/snapshots use IndexedDB, not MongoDB or Forgejo. Its
   opaque game frame has no project-storage access; a private MessagePort provides
-  only progress get/put. See §3 for acknowledgments, conflicts, schemas and backups.
+  progress and explicit export/player operations. See §3 for acknowledgments, conflicts, schemas and backups.
 - **Retained operational services:** API RTC signaling/optional relay configuration,
   durable certificate jobs in the API process, and homegames.link discovery/DNS remain
   useful. Manual RTC can bypass signaling. Browser play does not require a Node
@@ -259,24 +261,15 @@ rebuilt together to include fixes.
   `homegamesio` (website/Studio), `homegames` (launcher), `api` (backend), `worker`
   (retired external-worker code), `homegames.link` (discovery/DNS), `homegames-web` (legacy server).
 
-## Implementation references and remaining work
+## Implementation references
 
-- [Portable games, Studio, manual RTC and save contracts](../../homegames-core/docs/portable-games.md).
-- [RTC workers and transport limits](../../homegames-core/docs/rtc-performance-and-files.md).
-- [Aquarium performance and per-player visibility verification](../../homegames-core/docs/aquarium-performance.md).
-- [File uploads](../../homegames-core/docs/media-uploads.md) and [live media](../../homegames-core/docs/live-media.md).
+The shared package’s `docs/` directory includes `ARCHITECTURE.md`, `FLOWS.md`,
+`DATA-MODEL.md` and `OPERATIONS.md` for implementation details, storage identities
+and release procedures. These are also included in the downloadable authoring
+context. For the website guides, see [How it works](https://homegames.io/how_it_works.html)
+and [Self-hosting](https://homegames.io/self-hosting.html).
 
-Regression coverage includes portable import/export, real Chrome Studio/HTML saves,
-manual RTC, and Aquarium with eight players viewing different camera regions.
-Aquarium checks **received RTC bytes** against each player's own subtree plus shared
-nodes, then swaps cameras; total host nodes are not a per-guest bandwidth count.
-Aquarium now uses `saveGame`/`saveData` for automatic progress and resume; explicit
-checkpoint/export files remain a separate concept.
-
-Release checks still include Safari/iOS, physical phones, constrained home upload,
-WAN and forced-TURN play, storage eviction/recovery, featured-game playthroughs and
-rebuilt downloadable artifacts. Local Chrome checks do not establish those outcomes.
-Deployment state must be verified separately; source code alone does not establish it.
+Core's integration tests include portable import/export, Studio/HTML saves, manual RTC and Aquarium with eight players. Local browser tests do not establish performance on physical phones, constrained home uploads or WAN/TURN connections. Measure those environments when setting game capacity.
 
 ## Misc facts
 
@@ -388,7 +381,7 @@ module.exports = MyGame;
   AST parser reads this data without evaluating the class, its constructor or modules.
 - Require only one supported Squish version and project-relative JavaScript or JSON
   modules. Module paths resolve relative to the importing file; assets resolve from
-  the project root (§11). The browser bundles only **150**.
+  the project root (§11). The browser bundles **151** and **150**.
   Conflicting/unavailable imports fail validation. Do not use Node built-ins,
   external npm packages, direct networking/filesystem/storage, dynamic imports,
   dynamic `require`, `eval`, `new Function`, or browser/Node globals in game logic.
@@ -545,7 +538,7 @@ Test save/reopen, invalid imported data, quota failure, source-history restore a
 old-schema migration. Keep schema migrations deterministic and avoid mutating the
 loaded save object before it has been validated.
 
-**Method signatures are exact and important:**
+**Lifecycle signatures:**
 - `handleNewPlayer` receives a **single object** `{ playerId, info, settings, clientInfo, requestedGame }` — destructure it. `playerId` is a number. `info.name` is the player's name.
 - Players initially get a random two-word name. **More → Your name → Save name** changes it and remembers it in that browser. Local, RTC (including manual connections), and WebSocket sessions call `handlePlayerUpdate(playerId, { info, settings })` for a rename; `info.name` contains the new name and settings are preserved. Update any cached roster or label in this hook. Names are non-unique display text, 1–32 characters, never an identity or authorization key; use `playerId` for session state. Browser preferences stay outside game ZIPs/HTML, so recipients use their own names.
 - `handlePlayerDisconnect(playerId)` receives the **bare id**, not an object. (If a player id reconnects while already connected, the runtime fires `handlePlayerDisconnect` for the old connection and then `handleNewPlayer` again.)
@@ -553,11 +546,11 @@ loaded save object before it has been validated.
 - A node's `onClick` receives `(playerId, x, y)` — see §9.
 - Other real hooks the runtime calls when present: `handleMouseMove(playerId, {x, y})` / `handleMouseUp(playerId, data)` (held-pointer stream, §9), `handleGamepadInput(playerId, input)` (repeated normalized gamepad input; see below), `handlePlayerUpdate(playerId, { info, settings })` (a player renamed themselves or changed settings).
 
-> **If the runtime doesn't call it, it doesn't exist.** The hooks above are the complete lifecycle — there is no duck typing. A plausible-looking method the runtime never calls (`canAddPlayer()` as a join gate) is pure dead code: the game runs, the method sits there looking load-bearing, and everyone assumes it works. That's worse than an error — join capacity is *only* `metadata().maxPlayers`. When a behavior must exist, verify the mechanism is one named here (or a node `onClick`/`input`), and **comment out** unused hooks with an explanation so they cannot mislead a later reader; preserve retired code during this migration. (One method that IS honored despite looking optional: `getAssets()` returns `{ key: Asset }` for session assets on both Node and portable hosts. Generated assets must supply their bytes. Declare file assets in `metadata().assets`; use `addAsset` for later additions and the injected helper for player uploads.)
+The runtime calls the lifecycle hooks listed above. An unrecognized method such as `canAddPlayer()` does not enforce admission; use `metadata().maxPlayers` for capacity. `getAssets()` is supported on Node and portable hosts and returns `{ key: Asset }`. Generated assets must supply bytes. Declare file assets in `metadata().assets`, use `addAsset` for later additions, and the injected helper for player uploads.
 
 ---
 
-## 4. The single most important rule: state changes need `onStateChange()`
+## 4. Notify scene changes with `onStateChange()`
 
 Node properties (`coordinates2d`, `fill`, `color`, `text`, `playerIds`, ...) are **plain fields with no setters**. Mutating them updates your data but does **not** push anything to clients. You must notify after mutating:
 
@@ -591,73 +584,15 @@ this.scoreText.node.text = { text: `Score: ${this.score}`, x: 50, y: 10, size: 3
 this.base.node.onStateChange();
 ```
 
-### 4.1 What a notify costs — and the node-pooling rule
+### 4.1 Serialization and allocation costs
 
-Every notify — explicit `onStateChange()` or a tree operation — marks the host's
-render tree dirty. Bursts coalesce into a flush. The host serializes the combined
-attached tree, then prepares **a separate filtered view for each player**. Host CPU
-includes combined-node serialization and recipient filtering/copying; network cost
-is the sum of the sent per-player frame sizes. These are full view snapshots, not
-deltas. RTC skips identical frames/coalesces obsolete queued frames, but that does
-not eliminate unnecessary host serialization. Consequences:
+`onStateChange()` and tree operations mark the scene dirty. Notifications coalesce into a flush. The host serializes the attached tree, records inherited audiences and builds each recipient's ordered frame from those records. Every attached node costs host work, including nodes excluded from all player views. RTC sends full filtered snapshots; it can skip identical frames and replace obsolete queued frames, but it does not send node deltas.
 
-1. **Only notify when something actually changed.** An unconditional `this.base.node.onStateChange()` at the bottom of `tick()` re-squishes the combined tree and prepares recipient views `tickRate` times per second even when the game is sitting on a menu. Track a `changed` flag and notify once, only when true (see §14.2).
+Notify once after a batch of changes. Avoid dirtying an unchanged scene. Keep simulation state in ordinary data and attach the nodes needed for rendering and interaction; detach obsolete views and completed screens.
 
-2. **The tree holds what players are experiencing NOW; everything else is plain variables.** Every node in the tree is serialized on every dirty flush whether anyone can see it or not — an attached "hidden" node (`playerIds: [0]`, transparent fill, zero size) still costs squish CPU. `[0]` excludes it from player frames, while zero-size public nodes can still be transmitted (§8). So do **not** park inactive content in the tree as an "optimization": no pre-built menu screens waiting behind the gameplay, no ended-round scoreboards kept around invisibly, no roster of nodes for entities that aren't on screen. Model those in instance variables and **build nodes when a player should experience them, remove them when they're done** (`addChild`/`removeChild` at a screen transition is one structural notify — cheap, and it makes every subsequent flush smaller). The test for any node: *is some player seeing, hearing, or able to interact with this right now?* If not, it shouldn't be a node.
+Reuse nodes when it reduces allocation and tree churn, especially frequently updated labels and effects. Pools have a tradeoff: inactive attached slots still cost serialization. Measure reuse against attaching only active nodes, and detach a pool when its phase ends. Pool sizes are game decisions, not a framework requirement to reduce visual complexity.
 
-3. **Pool particle/trail/projectile nodes — never create/remove nodes per tick.** Per-tick `new GameNode.Shape(...)` + `addChild` + later `removeChild` churn (explosions, engine trails, bullets) grows the tree, generates garbage, and — because tree ops each mark the tree dirty — guarantees a full re-squish every single tick. It's also where orphan bugs hide (a node created but never added, or added but never removed on some code path, leaks forever). The correct pattern is a **bounded pool created when its gameplay phase starts, mutated in place, then detached when the phase ends**. A single-phase game can create it in the constructor:
-
-```js
-// Active phase setup: fixed pool, all idle (zero-size, transparent).
-// Attach these beneath a phase root; detach the root when this phase ends.
-this.particles = [];
-for (let i = 0; i < 48; i++) {
-    this.particles.push({
-        active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0,
-        node: new GameNode.Shape({
-            shapeType: Shapes.POLYGON,
-            coordinates2d: ShapeUtils.rectangle(0, 0, 0, 0),
-            fill: [0, 0, 0, 0],
-            color: [255, 255, 255, 255]
-        })
-    });
-    this.base.addChild(this.particles[i].node);
-}
-
-// Emit: claim inactive slots (if none are free, just emit fewer — the pool is the budget).
-emitBurst(x, y, fill, count) {
-    for (const p of this.particles) {
-        if (count <= 0) break;
-        if (p.active) continue;
-        count--;
-        p.active = true; p.life = 20; p.x = x; p.y = y;
-        /* set vx/vy */ p.node.node.fill = fill;
-    }
-}
-
-// tick(): mutate in place; on death hide, don't remove. Fade via `color` alpha (§7.4).
-for (const p of this.particles) {
-    if (!p.active) continue;
-    p.x += p.vx; p.y += p.vy; p.life--;
-    if (p.life <= 0) {
-        p.active = false;
-        p.node.node.coordinates2d = ShapeUtils.rectangle(0, 0, 0, 0);
-        p.node.node.fill = [0, 0, 0, 0];
-        continue;
-    }
-    p.node.node.coordinates2d = ShapeUtils.rectangle(p.x, p.y, 0.6, 0.6);
-    p.node.node.color = [255, 255, 255, Math.round(255 * p.life / 20)];
-}
-// ... then ONE onStateChange() for the whole tick.
-```
-
-   The same applies to enemies and pickups in wave games: cap the population, reuse dead slots. `addChild`/`removeChild` is for structural moments (screen transitions, players joining/leaving), not for the per-frame lifecycle of effects.
-
-   **Pooling is the narrow exception to rule 2, not a license to hoard.** A pool exists for things that blink on and off many times per second *during active play* — where per-tick create/remove churn would cost more than the idle slots do. It is sized to the effect's peak (a few dozen nodes), and the whole pool should still come out of the tree at structural moments if the game leaves the phase that uses it. "Pool the particles" does not generalize to "keep everything ever created in the tree and hide it."
-
-4. **Update `Text` by reassigning `node.text` — never remove-and-recreate the text node** to change a score/label. Recreation is churn, and it reorders the node's draw position in the tree.
-
-5. **Budget node count and glow.** Measure each player's actual frame bytes: total host upload is roughly the sum of remote frame sizes × sent updates/sec, plus transport overhead. Node size varies with properties/text, so ~55 bytes is only a rough example. Keep each view small; combined host node count affects CPU, not the payload sent to every guest. And the client renders `effects.shadow` with canvas `shadowBlur`, one of the most expensive canvas operations: glow a **handful of focal nodes** (title, the player's ship, a boss), not every enemy, particle, and pickup, or client framerate dies even when the server is fine.
+Measure host serialization, per-player frame bytes, transport queues and client paint time separately. Canvas shadows, text and large images can cost more than simple polygons, so node count alone is not a rendering budget. Optimize the measured cost before changing the game's visuals or population.
 
 ### 4.2 Set and measure a budget before raising player counts
 
@@ -775,17 +710,15 @@ const w = node.node.coordinates2d[1][0] - x;
 const h = node.node.coordinates2d[2][1] - y;
 ```
 
-> **Precision gotcha:** coordinates are serialized as an integer + a 2-decimal fraction, so the on-screen resolution is **~0.01 units** in `0–100` space. Movement smaller than that per frame rounds away — a `tick()` that adds `0.005` to a position will visually stutter or not move at all. Keep per-frame deltas ≥ ~0.05, or accumulate sub-unit motion in a plain variable and only write the rounded value into `coordinates2d`.
+> **Coordinate precision:** serialized positions have approximately 0.01-unit precision. Keep logical movement in ordinary numeric state so sub-unit motion accumulates; avoid rounding the simulation position after each tick.
 
-> **Off-plane / negative coordinates:** off-plane geometry is pinned at serialization, on every session type. The wire clamp is `[0, 255]`: **negatives pin to `0`** (there is no off-screen left or top — ever), and `100–255` survives serialization so content *may* slide off the right/bottom of a frameless canvas, but in a framed hosted session (where the platform bezel surrounds the game) it renders pinned against or under the frame instead. Since the same game runs in every session type, treat pinning as the rule everywhere: nothing is ever "just off-screen" — an enemy spawned at `y = -2` renders sitting *on* the edge, and content sliding off the right smears along the border instead of exiting cleanly. For entrances **and** exits, keep logical position in plain variables and only draw the node while it's fully on the plane (hide/remove it otherwise) — see the walk-on pattern below.
->
-> **Walk-on entrances — hide until *fully* on-plane.** The variables-first pattern above generalizes: logical position lives in plain vars (negative values are fine there — `r.x = -4 - i * 7` staggers an entering crowd correctly), and the node is drawn only once the entity's **entire rendered box** fits on the plane. The gate is the sprite's **half-width, not zero**: an 8-wide sprite centered at `x` draws from `x - 4`, so the draw condition is `x >= 4` — below that, hide the node (`if (r.x < 4) { hideSprite(n); continue; }`). This bug is invisible in code review because the movement math is *correct* — only the draw smears along the edge. Audit every spawn-at-edge and walk-on entrance for it.
+> **Off-plane coordinates:** polygon positions clamp to `[0, 255]` on the wire. Negative positions become zero; coordinates from 100 to 255 can extend beyond a frameless canvas. Scaled game layers clip to their 0–100 plane before applying the surrounding frame. Keep off-screen simulation positions in ordinary data and clip or hide their rendered geometry as needed.
 
 > **Vertex-count cap:** a node's `coordinates2d` is serialized into a length-limited wire frame — **at most 126 vertices per node** (verified: 126 round-trips, 127 breaks the frame). For detailed silhouettes (terrain skylines, rings, long strips) budget vertices: e.g. a destructible terrain polygon works at 96 columns (~100 vertices), and a "thick outline" strip that traces a path top-and-bottom doubles its vertex count — sample every other point to stay under the cap. Split very detailed geometry across multiple nodes.
 
 **Colors** are `[r, g, b, a]` arrays, each `0–255`. `a` (alpha) of `0` is fully transparent, `255` fully opaque.
 
-> **Color channels must be integers `0–255` — out-of-range values WRAP, they don't clamp.** Channels are written raw into the frame's byte buffer, so a computed value like `alpha: life * 8` that reaches `400` wraps to `144` mid-fade (the fade visibly flickers back on), and negatives wrap high. Clamp anything you compute: `Math.max(0, Math.min(255, Math.round(v)))`.
+> **Color channels must be integers `0–255`. Out-of-range channels wrap when packed into transport bytes.** Channels are written raw into the frame's byte buffer, so a computed value like `alpha: life * 8` that reaches `400` wraps to `144` mid-fade (the fade visibly flickers back on), and negatives wrap high. Clamp anything you compute: `Math.max(0, Math.min(255, Math.round(v)))`.
 
 ```js
 const { COLORS } = Colors;
@@ -815,7 +748,7 @@ STANDARD_GRAY, STORM_GRAY, SUCCESS_GREEN, TEAL, TENSE_SKY, TERRACOTTA, THICK_LUX
 WALLPAPER_BEIGE, WALLPAPER_GREEN, WHITE, YELLOW
 ```
 
-> **An invented color name fails SILENTLY as an invisible shape.** `COLORS.CHOCOLATE` or `COLORS.DARK_SAGE` isn't an error — it's `undefined`, and undefined fields are skipped at serialization, so the node renders with **no fill at all**. A "background that doesn't show up" or "shape that never appears" is very often a made-up palette name. If the exact color you want isn't in the list above, use an explicit `[r,g,b,a]` array (e.g. chocolate ≈ `[123, 63, 0, 255]`).
+> **Use a defined palette name or an explicit color array.** `COLORS.CHOCOLATE` or `COLORS.DARK_SAGE` isn't an error — it's `undefined`, and undefined fields are skipped at serialization, so the node renders with **no fill at all**. A "background that doesn't show up" or "shape that never appears" is very often a made-up palette name. If the exact color you want isn't in the list above, use an explicit `[r,g,b,a]` array (e.g. chocolate ≈ `[123, 63, 0, 255]`).
 
 ---
 
@@ -1360,7 +1293,7 @@ constructor({ handleFileUpload }) {
 
 Images display in the node's rectangle; audio plays without drawing; video draws decoded frames into the canvas and continues animating even when the scene does not change. Audio/video play once from `startTime` (seconds). Remove the node to stop playback; replace it with a new node to replay. Each device controls its own playback clock, so late joins begin at `startTime`, not at the host's current position. Games should handle replacement, cleanup and upload failures; Input Test demonstrates those paths.
 
-Browsers may require a tap/click on the canvas to enable sound; video can begin muted. Supported codecs depend on the browser. Uploaded clips are complete files, not live camera/microphone streams. See `src/games/input-test` in homegames-core for the image/audio/video example, and `homegames-core/docs/media-uploads.md` for the runtime contract and limits.
+Browsers may require a tap/click on the canvas to enable sound; video can begin muted. Supported codecs depend on the browser. Uploaded clips are complete files, not live camera/microphone streams. See `src/games/input-test` in homegames-core for the image/audio/video example, and Common’s `media-upload.js` for the runtime contract and limits.
 
 ### Live microphone and camera
 
@@ -1382,7 +1315,7 @@ Audio-only streams need no position/size. Own-source sound is always muted. `aud
 
 Use `media.setTransmitting(id, true/false)` on press/release for push-to-talk. The client also enforces a held canvas pointer/touch or Space key when `pushToTalk` is true and silences capture on release, cancellation, blur, hiding or input detach. This guard prevents delayed game messages from enabling a microphone after release. `transmitting` defaults to true for ordinary capture; explicitly start false for push-to-talk. `media.onChange(listener)` reports `{ id, playerId, audio, video, transmitting, state }` with state `ready`, `changed` or `ended`, and returns an unsubscribe function.
 
-Current media distribution is room-wide: scene scoping and hidden nodes affect presentation, not who receives the tracks. The source is not recorded; late joiners receive live media without history. Manual RTC pairing does not support live streams. The API is present in Core/WebSocket-only sessions, where requests reject with a browser/RTC requirement. See `src/games/walkie-talkie` and `homegames-core/docs/live-media.md` for the working POC, lifecycle and release instructions.
+Current media distribution is room-wide: scene scoping and hidden nodes affect presentation, not who receives the tracks. The source is not recorded; late joiners receive live media without history. Manual RTC pairing does not support live streams. The API is present in Core/WebSocket-only sessions, where requests reject with a browser/RTC requirement. See `src/games/walkie-talkie` and Common’s `media-session.js` for the implementation.
 
 ### Recorded camera clips
 
@@ -1765,7 +1698,7 @@ Gotchas:
 
 ---
 
-## 14. Complete, correct examples
+## 14. Examples
 
 ### 14.1 Single-player click game (event-driven, no tick)
 
@@ -1915,7 +1848,7 @@ class Movers extends Game {
 module.exports = Movers;
 ```
 
-### 14.3 Bots and enemy AI (games must be fun with one player)
+### 14.3 Bots and solo play
 
 A browser-hosted game usually begins with its host alone, even though Studio and downloaded HTML support RTC guests. Make that initial solo experience useful, and handle players joining/leaving during play. Do not assume a permanent single-player session or hardcode player ID `1`. The shipped catalog pattern: **bots fill empty slots at match start, and a disconnecting player's avatar is handed to a bot brain** (`agent.playerId = null; agent.isBot = true;`) so rounds never break. Keep entities as plain data (`{ x, y, angle, isBot, ... }`) and run bot logic in `tick()`.
 
@@ -1955,7 +1888,7 @@ hasLineOfSight(from, to) {
 
 Difficulty knobs, in order of impact: telegraph duration, aim-error slope, bot cooldown, engage range. Tune by simulation: a *stationary* target at mid-range should survive ~2s after being spotted; a moving one much longer. Also respect spawn-protection windows, and never let bots re-acquire while still cooling down.
 
-### 14.4 Pseudo-3D: a first-person raycaster (yes, really)
+### 14.4 First-person raycasting
 
 Because every player can have a fully private view (`playerIds`), and a view is just rectangles, the server can render **real-time first-person 3D**: give each player a strip of vertical wall-slice rects and recompute them every tick with a grid raycast. This is the most advanced pattern in the catalog (`prism-3d`), and it works — a multiplayer FPS in one file.
 
@@ -1990,7 +1923,7 @@ for (let col = 0; col < COLS; col++) {
 
 ## 15. Idioms and anti-patterns
 
-### 15.1 Write code where a typo can't hide
+### 15.1 Reuse geometry helpers
 
 Static portable validation does not play the game. Exceptions inside dispatched
 input handlers are logged and may leave the game in a partial state; deeper menus,
@@ -2038,7 +1971,7 @@ Four practices make it actually work instead of just looking organized:
 
 4. **A master difficulty knob scales quantities, not behavior.** `DIFFICULTY` should multiply HP, on-screen caps, and spawn tempo — and deliberately *not* touch movement speed or AI ranges. Scaling speed changes what enemies *are* (a 1.5× erratic hopper is undodgeable; kiting distances break); scaling counts and toughness changes how *hard* they are while every breed stays readable. Tempo knobs divide cooldowns, quantity knobs multiply counts (clamped by pool caps), and results get `Math.round` plus a floor of 1 so fractional multipliers can't produce 0-HP enemies or 0-tick cooldowns.
 
-### 15.3 Two small ones that ship constantly
+### 15.3 Common input and color mistakes
 
 - **Upgrade buttons advertise the *next* state, not the current one.** A "TURRET 2/4" label after two turrets are built reads as "buy turret #2" — off-by-one against what confirming will actually purchase. Label with `(count + 1)`. Applies to any incremental purchase.
 - **Voted actions re-vote on state change.** Any majority-vote flow (recipe confirm, shared purchase) must reset its votes when the thing being voted on changes — the proposal switches, the recipe is adjusted, or a voter disconnects (recount against the new majority threshold, and re-check whether the vote now passes with fewer players).
@@ -2052,7 +1985,7 @@ require('squish-151')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, Geometr
 
 Runtime:      one host-authoritative game instance: browser LocalSession (local + RTC players),
               or Node/Core with WebSocket clients. Use runtime-assigned player IDs, not fixed id 1.
-              Share/QR joins the running host; it sends views/media, not editable game source.
+              Session invitations join the running host. Source copies can be requested separately.
               Manual offer/answer bypasses Homegames signaling but cannot guarantee all NAT paths.
 Portable:     ordinary .zip = index.js + source/media + generated inventory; .html = playable copy.
               New games: no authored manifest. Internal format-2 descriptor is derived from metadata.
@@ -2217,7 +2150,7 @@ async saveDrawing() {
 
 **View exports** in the shared player toolbar lists successfully saved files, with image/audio/video previews where supported, plain-text previews, and **Save file**. Unknown formats remain downloadable. It works through the session protocol for local, RTC and WebSocket clients. Files are shared with joined players, not scoped by `playerIds`. Opening the viewer does not call into a game instance. A client can also use `listExports()` and `readExport(name)` to obtain metadata or `{ name, bytes }`.
 
-Website, self-hosted browser and downloaded HTML players use `homegames-common/player-toolbar.js`. Catalog play shows Home, title, Invite, Download app and More. More exposes additional player tools; the static game details page also provides installation instructions. Ordinary Play opens the game directly. Invite is unavailable for solo games; Share a copy still sends a separate playable copy. Self-hosted and standalone players retain their secondary tools in More. Opaque players expose public client actions/state to their trusted parent over `portable-client.js`; they do not render another toolbar inside the iframe. This is client presentation, not a game or Squish capability.
+Website, self-hosted browser and downloaded HTML players use `homegames-common/player-toolbar.js`. Open the Homegames menu for invitations, **Share with friends**, downloads, editing and available player tools. Solo games omit session invitations but can still share independent copies. Opaque players expose client actions/state to their trusted parent through `portable-client.js`; they do not render a second menu inside the iframe.
 
 To edit and re-import a creation, download the running player's **game ZIP** (or an updated HTML copy), which includes current `user-exports/` files. Import the ZIP into the existing Studio, edit or replace the files in that directory, save the project, and launch a new preview or download. On a Node host, edit the raw files in the game's `user-exports/` directory and restart the session. A new constructor receives those bytes through `userExports`; the game decides how to validate and apply them. The viewer's individual **Save file** button saves only that file, not a whole game or progress save. There is no automatic import of arbitrary files into game state from the viewer.
 

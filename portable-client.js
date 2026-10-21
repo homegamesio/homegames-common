@@ -1,10 +1,12 @@
 'use strict';
+const { createLiveMediaBridge } = require('./live-media-bridge');
 // Browser client adapter for opaque players. Commands operate on the public
 // Homegames client API; neither side reads game metadata or a game instance.
 function attachClientHost(window, frame, recordAudio, exportStorage, createExportsViewer, recordVideo, createPlayerToolbar, options = {}) {
     const document = window.document;
     let port, sequence = 0, closed = false, toolbar = options.toolbar, ownToolbar = false, recording, viewer, sharing;
     let gameTitle = options.title;
+    const liveMedia = options.createLiveMediaBridge?.(window, message => port?.postMessage(message), { host: true, busy: () => !!recording });
     const pending = new Map(), shareRequests = new Map();
     function request(format, name) {
         if (!port || closed) return Promise.reject(new Error('The player is not ready'));
@@ -48,6 +50,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
         const channel = new window.MessageChannel(); port = channel.port1;
         port.onmessage = event => {
             const message = event.data;
+            if (!closed && liveMedia?.handle(message)) return;
             if (!closed && message?.type === 'player-state') {
                 if (typeof message.title === 'string') { gameTitle = message.title.slice(0, 200); toolbar?.setTitle(gameTitle); }
                 if (typeof message.author === 'string') toolbar?.setAuthor?.(message.author.slice(0, 200));
@@ -116,7 +119,7 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
             }
             if (!closed && message?.type === 'cancel-audio') { if (recording?.requestId === message.id) recording.close(); return; }
             if (!closed && ['record-audio','record-video'].includes(message?.type) && Number.isSafeInteger(message.id)) {
-                if (recording) { port.postMessage({type:'audio-result', id:message.id, error:'A recording is already open'}); return; }
+                if (recording || liveMedia?.busy) { port.postMessage({type:'audio-result', id:message.id, error:'A microphone/camera is already active'}); return; }
                 const record = message.type === 'record-audio' ? recordAudio : recordVideo;
                 if (!record) { port.postMessage({type:'audio-result',id:message.id,error:'Recording is unavailable'}); return; }
                 recording = record(window, message.recording || {});
@@ -141,13 +144,17 @@ function attachClientHost(window, frame, recordAudio, exportStorage, createExpor
         toolbar?.setGameArea?.(frame, frame.parentElement);
     }
     window.addEventListener('message', connect);
-    return { request, command, download, close() { command('dispose-sharing'); closed = true; if (sharing) { toolbar?.setSharing?.(null); sharing = null; } window.removeEventListener('message', connect); port?.close(); if (ownToolbar) toolbar?.dispose(); recording?.close(); viewer?.close();
+    return { request, command, download, close() { command('dispose-sharing'); liveMedia?.close(); closed = true; if (sharing) { toolbar?.setSharing?.(null); sharing = null; } window.removeEventListener('message', connect); port?.close(); if (ownToolbar) toolbar?.dispose(); recording?.close(); viewer?.close();
         for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(new Error('Player closed')); } pending.clear(); shareRequests.clear(); } };
 }
 function connectClientSource(window, download, exports = {}, controls = {}) {
     let port, closed = false, sequence = 0, resolveConnect, state, playerName;
     const recordings = new Map();
     const connected = new Promise(resolve => { resolveConnect = resolve; });
+    const liveMedia = createLiveMediaBridge(window, message => {
+        if (port) port.postMessage(message);
+        else connected.then(() => { if (!closed) port?.postMessage(message); });
+    });
     const connectTimer = setTimeout(resolveConnect, 15000);
     const listener = event => {
         if (closed || event.source !== window.parent || event.data?.type !== 'homegames-client-port-v1' || !event.ports[0]) return;
@@ -155,6 +162,7 @@ function connectClientSource(window, download, exports = {}, controls = {}) {
         if (state) port.postMessage({ type: 'player-state', ...state });
         port.onmessage = async event => {
             const message = event.data;
+            if (liveMedia.handle(message)) return;
             if (!closed && message?.type === 'player-share' && Number.isSafeInteger(message.id)
                 && ['session', 'copy'].includes(message.mode)) {
                 try {
@@ -205,11 +213,12 @@ function connectClientSource(window, download, exports = {}, controls = {}) {
         getPlayerName: async () => { await connected; return playerName; },
         recordAudio: info => request('record-audio', {recording:info}),
         recordVideo: info => request('record-video', {recording:info}),
+        captureLive: info => liveMedia.request(info),
         viewExports: () => request('view-exports'),
         closeExports() { port?.postMessage({type:'close-exports'}); },
         cancelRecording(recordingId) { for (const [id, entry] of recordings) if (['record-audio','record-video'].includes(entry.type) && entry.recordingId === recordingId) { port?.postMessage({type:'cancel-audio',id}); clearTimeout(entry.timer); recordings.delete(id); entry.reject(new Error('Recording cancelled')); } },
         getExports: () => request('get-exports'), putExport: (name,bytes) => request('put-export',{name,bytes}),
-        close() { closed = true; clearTimeout(connectTimer); resolveConnect(); window.removeEventListener('message', listener); for (const [id,entry] of recordings) { if(entry.recordingId)port?.postMessage({type:'cancel-audio',id}); clearTimeout(entry.timer); entry.reject(new Error('Player closed')); } recordings.clear(); port?.close(); } };
+        close() { liveMedia.close(); closed = true; clearTimeout(connectTimer); resolveConnect(); window.removeEventListener('message', listener); for (const [id,entry] of recordings) { if(entry.recordingId)port?.postMessage({type:'cancel-audio',id}); clearTimeout(entry.timer); entry.reject(new Error('Player closed')); } recordings.clear(); port?.close(); } };
 }
 
 

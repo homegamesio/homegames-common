@@ -2,17 +2,17 @@
 
 Shared Homegames runtime, portable-project tooling, configuration and authoring reference. Node consumers use `index.js`; browser consumers import individual browser-compatible modules through `homegames-client`. There is no build step in this package.
 
-This documentation describes the current working-tree implementation, reviewed October 17, 2026. It does not establish what is deployed. Start with [SYSTEM.md](docs/SYSTEM.md) for the platform map.
+Implementation reference checked on October 20, 2026. Start with [SYSTEM.md](docs/SYSTEM.md) for the platform map.
 
 ## Current product paths
 
 Studio in `homegamesio` creates account-free browser projects. Source, media and snapshots live in IndexedDB; projects export as ZIPs and playable HTML. Games run in a browser host and can invite RTC guests. Studio uses local projects only. The active API exposes connection helpers; legacy account/content source remains on disk but is not registered by its entry point.
 
-**Share a copy** in Studio and new portable HTML exports sends the project ZIP over a separate private RTC connection. `homegames-client/src/rtc-copy*.js` handles consent, bounded transfer and integrity validation; signaling carries no archive payloads. The generic `/game-app.html` receiver builds and saves a self-contained playable HTML using the static site's trusted runtime. Recipients can download it, open it offline and share onward. Locally generated manifests identify individual game apps; saved app launches open the game directly. For peer copies, iOS users must receive/import inside the installed app because Safari storage is separate. Catalog links use this same player with a pinned static pack: a fresh Home Screen app downloads its own copy automatically on its first online launch, then starts locally thereafter. Studio remains the authoring tool, with explicit ZIP import for editing. Live **Share** still only joins the running host.
+**Share a copy** in Studio and new portable HTML exports sends the project ZIP over a separate private RTC connection. `homegames-client/src/rtc-copy*.js` handles consent, bounded transfer and integrity validation; signaling carries no archive payloads. The generic `/game-app.html` receiver stores the verified ZIP and a shared cached runtime; it builds self-contained HTML for download. Recipients can download it, open it offline and share onward. Locally generated manifests identify individual game apps; saved app launches open the game directly. For peer copies, iOS users must receive/import inside the installed app because Safari storage is separate. Catalog links use this same player with a pinned static pack: a fresh Home Screen app downloads its own copy automatically on its first online launch, then starts locally thereafter. Studio remains the authoring tool, with explicit ZIP import for editing. A session invitation joins the running host. Joined players can also request source when the host provides project export.
 
 Core also supports the home dashboard, browser-hosted play and optional Node/WebSocket game sessions. Browser play does not start a Docker container. The self-hosted dashboard reads its local library, imports portable ZIPs on localhost, and current bundles include local game media and RTC signaling for offline LAN play.
 
-Browser players share `player-toolbar.js`: one top row. Catalog play shows Home, title, Invite, Download app and More. More exposes additional player tools; the game details page also provides installation instructions. Self-hosted and standalone players retain View exports and More. Portable player tools include game downloads, save import/export, copy sharing and manual pairing. Invite is unavailable for solo games; Share a copy can still send a separate playable copy to a friend. The trusted parent owns this toolbar when a game runs in an opaque iframe, and `portable-client.js` carries client controls/state across its private MessagePort. Games and Squish do not depend on this browser UI.
+Browser players share `player-toolbar.js`. The Homegames button opens a menu with session invitations, **Share with friends** for an independent copy, downloads, editing and other tools supported by the host. Solo games omit the session invitation. The trusted parent owns this menu when a game runs in an opaque iframe; `portable-client.js` carries controls and state across its private MessagePort.
 
 ## Modules
 
@@ -30,9 +30,9 @@ Browser players share `player-toolbar.js`: one top row. Catalog play shows Home,
 
 ## Squish versions and loading
 
-`game-loader.js` exports `squishMap`, `DEFAULT_SQUISH_VERSION` (`150`), AST version parsing/detection, game class loaders and Forgejo archive loading. `detectSquishVersion(code)` is exported and supplies a fallback for raw-source sessions.
+`game-loader.js` exports `squishMap`, `DEFAULT_SQUISH_VERSION` (`151`), AST version parsing/detection, game class loaders and Forgejo archive loading. `detectSquishVersion(code)` is exported and supplies a fallback for raw-source sessions.
 
-Current Node and browser maps contain only **150**, installed as the pinned `squish-150` alias for MIT Squish 1.5.0.
+Current Node and browser maps support **151** (MIT Squish 1.5.1) and **150** (MIT Squish 1.5.0). New games use 151; existing 150 projects remain supported.
 New games export a class from `index.js` with static metadata containing a stable
 UUID `gameId`, `name` and an explicit integer `maxPlayers` from 1 to 255. The runtime
 version comes from `require('squish-NNN')`; no authored `homegame.json`, duplicate
