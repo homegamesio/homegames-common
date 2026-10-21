@@ -7,7 +7,7 @@ const project = require('./portable-project');
 
 // Match the current browser build explicitly. Do not substitute runtime
 // versions, or promise an offline export with an unavailable runtime.
-const SUPPORTED_RUNTIMES = ['150'];
+const SUPPORTED_RUNTIMES = Object.keys(require('./game-loader').squishMap);
 const options = { supportedRuntimes: SUPPORTED_RUNTIMES,
     sha256: data => crypto.createHash('sha256').update(data).digest('hex') };
 

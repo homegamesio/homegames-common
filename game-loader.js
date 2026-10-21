@@ -9,10 +9,11 @@ const os = require('os');
 // SINGLE SOURCE OF TRUTH — all repos should import from here.
 // ---------------------------------------------------------------------------
 const squishMap = {
-    '150': 'squish-150'
+    '150': 'squish-150',
+    '151': 'squish-151'
 };
 
-const DEFAULT_SQUISH_VERSION = '150';
+const DEFAULT_SQUISH_VERSION = '151';
 
 // ---------------------------------------------------------------------------
 // Parse squish version from a source string using AST (reliable, needs acorn).

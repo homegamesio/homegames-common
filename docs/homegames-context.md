@@ -147,7 +147,7 @@ explicit-trust execution path. See the portable implementation reference below.
 
 - Export a JavaScript class from `index.js` (`module.exports = MyGame`), extending
   `Game` or `ViewableGame` from one pinned Squish package, such as
-  `const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-150');`.
+  `const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-151');`.
 - Put a stable UUID `gameId`, `name` and integer `maxPlayers` from 1 to 255 in the class's
   `static metadata()`. That is the authored source of game information. New games
   need no `homegame.json`, duplicate `squishVersion` or `services` declaration.
@@ -231,7 +231,7 @@ rebuilt together to include fixes.
   it does not infer camera bounds from arbitrary coordinates. RTC currently sends
   full **per-player view snapshots**, not deltas or the entire combined host tree.
   Identical frames can be skipped and queued obsolete frames coalesced.
-- Squish is the versioned binary node format. Default authoring target: `squish-150`
+- Squish is the versioned binary node format. Default authoring target: `squish-151`
   (`squishjs@1.5.0`). The browser bundle and shared Node loader contain only
   **150**. The supported version is inferred from the source
   import. Portable validation rejects unavailable or conflicting versions rather
@@ -283,7 +283,8 @@ Deployment state must be verified separately; source code alone does not establi
 - Licensing: Homegames-authored code, templates and cleared media are MIT licensed.
   Keep the license and copyright notices in copies. Third-party material and imported
   projects retain their own terms; do not overwrite their notices. New builds bundle
-  only MIT Squish 1.5.0 (`squish-150`). Portable validation does not verify ownership.
+  MIT Squish 1.5.1 (`squish-151`) and retain MIT 1.5.0 (`squish-150`) for existing projects.
+  Portable validation does not verify ownership.
 - Contact/support: email joseph@homegames.io, or open a GitHub issue (github.com/homegamesio).
 - Bugs/ideas: GitHub issues on the relevant repo under github.com/homegamesio.
 
@@ -299,7 +300,7 @@ When editing an existing game, preserve its identity, saves, source and notices.
 
 # PART II — SquishJS Game Authoring: the contract for valid games
 
-> Technical reference checked against the shared runtime, browser client and SquishJS (`squish-150` by default). Target portable projects. Static import/export validation reads data without running gameplay (§2); it is not a playthrough or a resource sandbox.
+> Technical reference checked against the shared runtime, browser client and SquishJS (`squish-151` by default). Target portable projects. Static import/export validation reads data without running gameplay (§2); it is not a playthrough or a resource sandbox.
 
 ---
 
@@ -360,7 +361,7 @@ Key mental model:
 media. The exported class's `static metadata()` is the source of game information:
 
 ```js
-const { Game } = require('squish-150');
+const { Game } = require('squish-151');
 class MyGame extends Game {
     static metadata() {
         return {
@@ -376,7 +377,7 @@ module.exports = MyGame;
 ```
 
 - Do not create a competing manifest or duplicate the imported runtime version.
-  The parser infers `150` from the static `require('squish-150')` and creates an
+  The parser infers `151` from the static `require('squish-151')` and creates an
   internal `project.manifest` with `formatVersion: 2`, identity, `entry: 'index.js'`,
   runtime and save schema for storage/export tooling. It is generated bookkeeping,
   not a second authored file. Do not edit the generated integrity inventory either.
@@ -430,7 +431,7 @@ new revision; simple reimport/repacking must not rewrite an old revision or its 
 Extend `Game` and implement these. Only `metadata()`, the constructor, and `getLayers()` are mandatory; the rest are optional hooks the runtime calls when present.
 
 ```js
-const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-150');
+const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-151');
 const { COLORS } = Colors;
 
 class MyGame extends Game {
@@ -820,7 +821,7 @@ WALLPAPER_BEIGE, WALLPAPER_GREEN, WHITE, YELLOW
 
 ## 7. Node types
 
-The basic node types are `Shape`, `Text` and `Asset`, all created via `GameNode`. Squish 1.5.0 also provides native `GameNode.Stream` for live media (see §9, Live microphone and camera). All accept an optional numeric `id` and `playerIds`. Shape, text and asset nodes accept pointer callbacks; use a shape with an explicit hit area for predictable button sizing (see §7.2).
+The basic node types are `Shape`, `Text` and `Asset`, all created via `GameNode`. Squish 1.5.1 also provides native `GameNode.Stream` for live media (see §9, Live microphone and camera). All accept an optional numeric `id` and `playerIds`. Shape, text and asset nodes accept pointer callbacks; use a shape with an explicit hit area for predictable button sizing (see §7.2).
 
 ### 7.1 `GameNode.Shape` — polygons, rectangles, lines
 
@@ -896,7 +897,7 @@ Note the field is `textInfo` in the constructor, but it is stored on the node as
 
 > **Hard length cap: ~154 characters per Text node.** A Text node's wire subframe is length-limited; beyond ~154 characters (fewer with a long font name) the frame silently corrupts — the text truncates and other node fields break, with no error. Keep every Text node's string well under this (it's far more than fits on screen at readable sizes anyway); long passages are multiple nodes.
 
-> **A text label needs a separate click target.** Squish 1.5.0 accepts pointer callbacks on `Text`, but the shared click hit-test requires `coordinates2d`, which the Text constructor does not create. **To make a clickable label or button, put the click handler on a `Shape` and render the `Text` on top of it** — see §7.2.1. This also gives the label a generously sized, predictable touch target.
+> **A text label needs a separate click target.** Squish 1.5.1 accepts pointer callbacks on `Text`, but the shared click hit-test requires `coordinates2d`, which the Text constructor does not create. **To make a clickable label or button, put the click handler on a `Shape` and render the `Text` on top of it** — see §7.2.1. This also gives the label a generously sized, predictable touch target.
 
 #### 7.2.1 Text is not a button — build buttons from a Shape + Text
 
@@ -1011,7 +1012,7 @@ this.sprite.node.asset = { 'sheet': { pos, size, ...frameCrop(this.frame, this.f
 this.base.node.onStateChange();
 ```
 
-> Cropping is supported by the bundled Squish 1.5.0 runtime.
+> Cropping is supported by the bundled Squish 1.5.1 runtime.
 
 ### 7.3.2 Sprite-with-shape-fallback — developing before the art lands
 
@@ -1365,10 +1366,10 @@ Browsers may require a tap/click on the canvas to enable sound; video can begin 
 
 Browser/RTC sessions inject `media` into the game constructor. `await media.request(playerId, { audio: true, video: false, transmitting: false, pushToTalk: true })` asks that player to confirm capture in a platform dialog and returns a session-scoped stream handle. Catch denial, cancellation, unavailable devices and disconnect errors. Only one capture can be active per player.
 
-Reference its ID with native `GameNode.Stream`, available in `squish-150`. Import that version when using streams; the runtime version is inferred from the import. Squish serializes the stream reference and presentation properties; the session/client transports the live media separately.
+Reference its ID with native `GameNode.Stream`, available in `squish-151`. Import that version when using streams; the runtime version is inferred from the import. Squish serializes the stream reference and presentation properties; the session/client transports the live media separately.
 
 ```js
-const { GameNode } = require('squish-150');
+const { GameNode } = require('squish-151');
 const node = new GameNode.Stream({
     streamId: stream.id,
     pos: { x: 10, y: 20 }, size: { x: 40, y: 30 },
@@ -1416,7 +1417,7 @@ Downloaded HTML and Studio previews run in isolated players. Their explicit pare
 
 `Shape` and `Asset` nodes also accept `onHover(playerId)` and `offHover(playerId)` (pointer enter / leave). Use them only for cosmetic affordances — **touch devices have no hover**, so never gate a mechanic on it.
 
-> **Hover-only nodes work directly in Squish 1.5.0.** The presence of `onHover` is serialized so the client can report enter/leave events; the callback function stays in the game runtime. A no-op `onClick` is unnecessary. The shared dispatcher also checks attachment, interactivity and ancestor visibility before invoking the callback.
+> **Hover-only nodes work directly in Squish 1.5.1.** The presence of `onHover` is serialized so the client can report enter/leave events; the callback function stays in the game runtime. A no-op `onClick` is unnecessary. The shared dispatcher also checks attachment, interactivity and ancestor visibility before invoking the callback.
 
 ### Player cursors
 
@@ -1542,7 +1543,7 @@ metadata. `Asset` comes from the pinned Squish import; the portable loader wraps
 with a project-scoped reader without modifying the released Squish class globally.
 
 ```js
-const { Asset } = require('squish-150');
+const { Asset } = require('squish-151');
 // Inside static metadata()'s returned object:
 assets: {
     hero: new Asset({ path: './assets/hero.png', type: 'image' }),
@@ -1611,7 +1612,7 @@ This is the §1 tree model made explicit: the world can be as large as you like 
 ### Setup
 
 ```js
-const { ViewableGame, GameNode, Colors, Shapes, ShapeUtils, ViewUtils } = require('squish-150');
+const { ViewableGame, GameNode, Colors, Shapes, ShapeUtils, ViewUtils } = require('squish-151');
 
 class MyWorld extends ViewableGame {
     constructor() {
@@ -1769,7 +1770,7 @@ Gotchas:
 ### 14.1 Single-player click game (event-driven, no tick)
 
 ```js
-const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-150');
+const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-151');
 const { COLORS } = Colors;
 
 class ClickCounter extends Game {
@@ -1825,7 +1826,7 @@ module.exports = ClickCounter;
 ### 14.2 Multiplayer movement game (players join, move with keys, tick loop)
 
 ```js
-const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-150');
+const { Game, GameNode, Colors, Shapes, ShapeUtils } = require('squish-151');
 const { COLORS } = Colors;
 
 class Movers extends Game {
@@ -2047,7 +2048,7 @@ Four practices make it actually work instead of just looking organized:
 ## 16. Quick reference card
 
 ```
-require('squish-150')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, GeometryUtils, Asset, Physics, ... }
+require('squish-151')  ->  { Game, GameNode, Colors, Shapes, ShapeUtils, GeometryUtils, Asset, Physics, ... }
 
 Runtime:      one host-authoritative game instance: browser LocalSession (local + RTC players),
               or Node/Core with WebSocket clients. Use runtime-assigned player IDs, not fixed id 1.
@@ -2055,8 +2056,8 @@ Runtime:      one host-authoritative game instance: browser LocalSession (local 
               Manual offer/answer bypasses Homegames signaling but cannot guarantee all NAT paths.
 Portable:     ordinary .zip = index.js + source/media + generated inventory; .html = playable copy.
               New games: no authored manifest. Internal format-2 descriptor is derived from metadata.
-              only squish-150; version comes from the import.
-              V1 manifests/custom entries remain supported when their runtime is 150; older runtimes are rejected.
+              New games use squish-151; version comes from the import. Existing squish-150 projects remain supported.
+              V1 manifests/custom entries remain supported with runtime 150 or 151; earlier runtimes are rejected.
 Saves:        constructor({saveGame, saveData}); validate loaded JSON and rebuild nodes from state.
               Portable: <=1 MiB UTF-8 JSON; Promise resolves after IndexedDB commit, no write debounce.
               installation + save-schema:N slot; source snapshots don't roll back progress.
